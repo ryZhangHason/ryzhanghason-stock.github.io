@@ -128,7 +128,7 @@ print(f"Processing {ticker} for period {period}...")
 # Step 1: Fetch stock data
 print("Step 1: Fetching stock data...")
 try:
-    df = get_stock_data(ticker, period=period)
+    df = await get_stock_data_async(ticker, period=period)
     print(f"Fetched {len(df)} days of data")
 except Exception as e:
     raise Exception(f"Failed to fetch data: {str(e)}")
