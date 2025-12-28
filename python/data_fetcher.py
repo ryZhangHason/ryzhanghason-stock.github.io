@@ -13,16 +13,23 @@ except ImportError:
 
 async def fetch_from_yahoo_async(url):
     """Async fetch for browser environment using JavaScript fetch API with CORS proxy fallback"""
+    import asyncio
+
     # List of CORS proxies to try
     proxies = [
         url,  # Try direct first
         f"https://api.allorigins.win/raw?url={url}",
-        f"https://corsproxy.io/?{url}"
+        f"https://corsproxy.io/?{url}",
+        f"https://api.codetabs.com/v1/proxy?quest={url}"
     ]
 
     last_error = None
-    for proxy_url in proxies:
+    for i, proxy_url in enumerate(proxies):
         try:
+            # Add a small delay between attempts to avoid rate limiting
+            if i > 0:
+                await asyncio.sleep(2)
+
             # Use JavaScript fetch directly
             response = await fetch(proxy_url)
 
@@ -153,12 +160,13 @@ async def get_stock_data_async(ticker, period='1y', max_retries=3):
                 else:
                     raise Exception(f"Error fetching data for {ticker}: {str(e)}")
 
-            # Wait before retrying (using async sleep in browser)
+            # Wait before retrying (using async sleep in browser) with exponential backoff
+            wait_time = retry_count * 2
             if IN_BROWSER:
                 import asyncio
-                await asyncio.sleep(1)
+                await asyncio.sleep(wait_time)
             else:
-                time.sleep(1)
+                time.sleep(wait_time)
 
 def get_stock_data(ticker, period='1y', max_retries=3):
     """
