@@ -86,53 +86,83 @@ async function fetchStockData(symbol, period) {
     const periodDays = { '3mo': 90, '6mo': 180, '1y': 365, '2y': 730 };
     const days = periodDays[period] || 180;
 
-    // Use a reliable free API - Twelve Data (no API key needed for basic usage)
-    try {
-        const url = `https://api.twelvedata.com/time_series?symbol=${symbol}&interval=1day&outputsize=${Math.min(days, 5000)}&format=JSON`;
+    console.log(`Fetching data for ${symbol}, period: ${period} (${days} days)`);
 
+    // Use Alpha Vantage - free tier, 25 requests/day, no credit card needed
+    // Demo key works for testing (use 'demo' for limited stocks)
+    try {
+        // Try TIME_SERIES_DAILY which works with demo key for common stocks
+        const apiKey = 'demo'; // Users can get free key at alphavantage.co
+        const url = `https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=${symbol}&outputsize=${days > 100 ? 'full' : 'compact'}&apikey=${apiKey}`;
+
+        console.log('Fetching from Alpha Vantage...');
         const response = await fetch(url);
         const data = await response.json();
 
-        if (data.status === 'error' || !data.values) {
-            throw new Error('Failed to fetch stock data');
+        console.log('Alpha Vantage response:', data);
+
+        if (data['Time Series (Daily)']) {
+            const timeSeries = data['Time Series (Daily)'];
+            const dates = Object.keys(timeSeries).sort().slice(-days);
+
+            return dates.map(date => ({
+                date: date,
+                open: parseFloat(timeSeries[date]['1. open']),
+                high: parseFloat(timeSeries[date]['2. high']),
+                low: parseFloat(timeSeries[date]['3. low']),
+                close: parseFloat(timeSeries[date]['4. close']),
+                volume: parseInt(timeSeries[date]['5. volume'])
+            }));
         }
 
-        return data.values.reverse().map(item => ({
-            date: item.datetime,
-            open: parseFloat(item.open),
-            high: parseFloat(item.high),
-            low: parseFloat(item.low),
-            close: parseFloat(item.close),
-            volume: parseInt(item.volume)
-        }));
+        // If demo key doesn't work, try a backup: use a simple proxy to Yahoo Finance
+        console.log('Alpha Vantage failed, trying Yahoo via proxy...');
+        const endTimestamp = Math.floor(Date.now() / 1000);
+        const startTimestamp = endTimestamp - (days * 24 * 60 * 60);
+
+        const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?period1=${startTimestamp}&period2=${endTimestamp}&interval=1d`;
+
+        // Try different CORS proxies
+        const proxies = [
+            `https://api.allorigins.win/raw?url=${encodeURIComponent(yahooUrl)}`,
+            `https://corsproxy.io/?${encodeURIComponent(yahooUrl)}`,
+            `https://cors-anywhere.herokuapp.com/${yahooUrl}`
+        ];
+
+        for (const proxyUrl of proxies) {
+            try {
+                console.log(`Trying proxy: ${proxyUrl.substring(0, 50)}...`);
+                const resp = await fetch(proxyUrl);
+
+                if (resp.ok) {
+                    const yahooData = await resp.json();
+
+                    if (yahooData.chart && yahooData.chart.result && yahooData.chart.result[0]) {
+                        const result = yahooData.chart.result[0];
+                        const timestamps = result.timestamp;
+                        const quotes = result.indicators.quote[0];
+
+                        return timestamps.map((ts, i) => ({
+                            date: new Date(ts * 1000).toISOString().split('T')[0],
+                            open: quotes.open[i] || 0,
+                            high: quotes.high[i] || 0,
+                            low: quotes.low[i] || 0,
+                            close: quotes.close[i] || 0,
+                            volume: quotes.volume[i] || 0
+                        })).filter(d => d.close > 0);
+                    }
+                }
+            } catch (e) {
+                console.error(`Proxy ${proxyUrl.substring(0, 30)} failed:`, e);
+                continue;
+            }
+        }
+
+        throw new Error('All data sources failed');
 
     } catch (error) {
-        console.error('Twelve Data failed, trying alternative...');
-
-        // Fallback: Try Polygon.io aggregates (demo mode)
-        try {
-            const endDate = new Date();
-            const startDate = new Date(endDate - days * 24 * 60 * 60 * 1000);
-            const url = `https://api.polygon.io/v2/aggs/ticker/${symbol}/range/1/day/${startDate.toISOString().split('T')[0]}/${endDate.toISOString().split('T')[0]}?adjusted=true&sort=asc&apiKey=demo`;
-
-            const response = await fetch(url);
-            const data = await response.json();
-
-            if (data.results && data.results.length > 0) {
-                return data.results.map(item => ({
-                    date: new Date(item.t).toISOString().split('T')[0],
-                    open: item.o,
-                    high: item.h,
-                    low: item.l,
-                    close: item.c,
-                    volume: item.v
-                }));
-            }
-        } catch (e) {
-            console.error('Polygon also failed');
-        }
-
-        throw new Error(`Unable to fetch data for ${symbol}. Please check the symbol and try again.`);
+        console.error('Error fetching stock data:', error);
+        throw new Error(`Unable to fetch data for ${symbol}. This demo uses free APIs with limitations. Try: AAPL, MSFT, GOOGL, TSLA`);
     }
 }
 
