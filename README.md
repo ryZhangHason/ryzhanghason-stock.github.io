@@ -1,16 +1,18 @@
 # Stock Price Predictor Web App
 
-🌐 **Live Demo**: https://ryzhanghason-stock.github.io/
+🌐 **Live Demo**: https://ryzhanghason.github.io/ryzhanghason-stock.github.io/
 
-A beautiful web-based stock price prediction application powered by XGBoost machine learning.
+A beautiful web-based stock price prediction application that runs **100% in your browser** using Python (Pyodide).
 
 ## 🌟 Features
 
-- **Real-time Stock Predictions**: Enter any stock symbol and get UP/DOWN predictions
-- **Interactive Charts**: Beautiful visualizations of price history, composite index, and strategy performance
-- **Trading Strategy Optimization**: Automatically optimizes buy/sell thresholds
-- **Model Metrics**: View accuracy, precision, F1 score, and more
-- **Responsive Design**: Works on desktop and mobile devices
+- **🚀 No Server Needed**: Python runs entirely in your browser via WebAssembly
+- **🔒 Privacy-First**: All computations happen locally - no data sent to servers
+- **📊 Real-time Stock Data**: Fetches live data from Yahoo Finance
+- **📈 Technical Analysis**: Calculates MA, RSI, MACD, Volatility, and Momentum
+- **🎯 Smart Predictions**: Multi-indicator scoring system for UP/DOWN predictions
+- **📱 Responsive Design**: Works on desktop and mobile devices
+- **⚡ One-Time Load**: ~100MB download on first visit, then cached by browser
 
 ## 🚀 Quick Start
 
