@@ -26,13 +26,23 @@ function updateProgress(percent, message) {
     if (loadingMessage && message) loadingMessage.textContent = message;
 }
 
-predictBtn.addEventListener('click', handlePredict);
+predictBtn.addEventListener('click', () => {
+    console.log('Predict button clicked!');
+    handlePredict();
+});
+
 stockSymbolInput.addEventListener('keypress', (e) => {
-    if (e.key === 'Enter') handlePredict();
+    if (e.key === 'Enter') {
+        console.log('Enter key pressed');
+        handlePredict();
+    }
 });
 
 async function handlePredict() {
+    console.log('handlePredict called');
     const symbol = stockSymbolInput.value.trim().toUpperCase();
+    console.log('Symbol:', symbol);
+
     if (!symbol) {
         showError('Please enter a stock symbol');
         return;
