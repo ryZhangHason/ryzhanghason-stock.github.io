@@ -50,9 +50,6 @@ async function initPython() {
         predictBtn.textContent = '🔄 Installing XGBoost...';
         await micropip.install('xgboost');
 
-        predictBtn.textContent = '🔄 Installing technical analysis package...';
-        await micropip.install('ta');
-
         console.log('Loading Python modules...');
         predictBtn.textContent = '🔄 Loading modules...';
 
