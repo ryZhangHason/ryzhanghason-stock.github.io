@@ -170,6 +170,7 @@ except Exception as e:
 print("Step 6: Calculating composite index...")
 try:
     composite_index = predictor.calculate_composite_index(df_features)
+    df_features['Composite_Index'] = composite_index
     print(f"Composite index calculated")
 except Exception as e:
     raise Exception(f"Failed to calculate composite index: {str(e)}")
@@ -179,7 +180,7 @@ strategy_results = None
 if optimize_strategy:
     print("Step 7: Optimizing trading strategy...")
     try:
-        optimizer = StrategyOptimizer(df_features, predictor)
+        optimizer = StrategyOptimizer(df_features)
         strategy_results = optimizer.optimize_all_strategies()
         print(f"Strategy optimization complete")
     except Exception as e:
@@ -223,7 +224,8 @@ chart_data = {
 # Composite index chart data
 composite_data = {
     'dates': chart_data['dates'],
-    'index': [float(x) if not pd.isna(x) else 50.0 for x in composite_index.tail(60)]
+    'index': [float(x) if not pd.isna(x) else 50.0 for x in composite_index.tail(60)],
+    'close': chart_data['close']
 }
 
 # Strategy chart data
@@ -430,24 +432,60 @@ function displayCompositeChart(compositeData) {
                 backgroundColor: 'rgba(99, 102, 241, 0.1)',
                 tension: 0.3,
                 borderWidth: 2,
-                fill: true
+                fill: true,
+                yAxisID: 'y'
+            }, {
+                label: 'Stock Price',
+                data: compositeData.close,
+                borderColor: 'rgb(75, 192, 192)',
+                backgroundColor: 'rgba(75, 192, 192, 0.1)',
+                tension: 0.2,
+                borderWidth: 2,
+                fill: false,
+                yAxisID: 'y1'
             }]
         },
         options: {
             responsive: true,
+            interaction: {
+                mode: 'index',
+                intersect: false
+            },
             plugins: {
                 title: {
                     display: true,
-                    text: 'Composite Buy/Sell Signal (0=Sell, 100=Buy)',
+                    text: 'Composite Index & Stock Price',
                     font: { size: 16 }
                 }
             },
             scales: {
                 y: {
+                    type: 'linear',
+                    display: true,
+                    position: 'left',
                     min: 0,
                     max: 100,
+                    title: {
+                        display: true,
+                        text: 'Composite Index (0=Sell, 100=Buy)'
+                    },
                     ticks: {
                         callback: value => value
+                    }
+                },
+                y1: {
+                    type: 'linear',
+                    display: true,
+                    position: 'right',
+                    title: {
+                        display: true,
+                        text: 'Stock Price ($)'
+                    },
+                    ticks: {
+                        callback: value => '$' + value.toFixed(2)
+                    },
+                    grid: {
+                        drawOnChartArea: false
                     }
                 }
             }
