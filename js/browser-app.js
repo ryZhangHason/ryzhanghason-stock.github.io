@@ -3,6 +3,53 @@ let pyodide;
 let priceChart;
 let isPythonReady = false;
 
+// Function to fetch stock data from Yahoo Finance API
+async function fetchStockData(symbol, period) {
+    // Convert period to range
+    const periodMap = {
+        '3mo': 90,
+        '6mo': 180,
+        '1y': 365,
+        '2y': 730
+    };
+    const days = periodMap[period] || 180;
+
+    try {
+        // Using Yahoo Finance API v8
+        const end = Math.floor(Date.now() / 1000);
+        const start = end - (days * 24 * 60 * 60);
+
+        const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?period1=${start}&period2=${end}&interval=1d`;
+
+        const response = await fetch(url);
+        if (!response.ok) {
+            throw new Error(`Failed to fetch data for ${symbol}`);
+        }
+
+        const data = await response.json();
+        const result = data.chart.result[0];
+
+        if (!result || !result.timestamp) {
+            throw new Error('Invalid data received');
+        }
+
+        const timestamps = result.timestamp;
+        const quotes = result.indicators.quote[0];
+
+        return timestamps.map((timestamp, i) => ({
+            date: new Date(timestamp * 1000).toISOString().split('T')[0],
+            close: quotes.close[i] || 0,
+            high: quotes.high[i] || 0,
+            low: quotes.low[i] || 0,
+            volume: quotes.volume[i] || 0
+        })).filter(d => d.close > 0);  // Filter out invalid data
+
+    } catch (error) {
+        console.error('Error fetching stock data:', error);
+        throw new Error(`Failed to fetch data for ${symbol}. Please check the symbol and try again.`);
+    }
+}
+
 // DOM elements
 const predictBtn = document.getElementById('predictBtn');
 const stockSymbolInput = document.getElementById('stockSymbol');
@@ -28,19 +75,11 @@ async function initPython() {
         console.log('Installing additional packages...');
         const micropip = pyodide.pyimport('micropip');
 
-        // Install packages one by one with progress
-        predictBtn.textContent = '🔄 Installing yfinance...';
-        await micropip.install('yfinance');
-
         predictBtn.textContent = '🔄 Installing scikit-learn...';
         await micropip.install('scikit-learn');
 
-        predictBtn.textContent = '🔄 Installing xgboost (this may take a moment)...';
-        try {
-            await micropip.install('xgboost');
-        } catch (e) {
-            console.warn('xgboost not available, will use simpler model');
-        }
+        // Note: We'll fetch stock data directly via JavaScript/API instead of yfinance
+        console.log('Using JavaScript for data fetching (yfinance not compatible with browser)');
 
         console.log('Python environment ready!');
         isPythonReady = true;
@@ -84,27 +123,46 @@ async function handlePredict() {
     predictBtn.disabled = true;
 
     try {
-        // Run Python code in browser
+        // Fetch stock data using JavaScript (Yahoo Finance API)
         const period = timePeriodSelect.value;
-
         loadingMessage.textContent = 'Downloading stock data...';
+
+        const stockData = await fetchStockData(symbol, period);
+
+        if (!stockData || stockData.length === 0) {
+            throw new Error(`No data found for ${symbol}`);
+        }
+
+        loadingMessage.textContent = 'Analyzing data with Python...';
+
+        // Prepare data for Python
+        const dates = stockData.map(d => d.date);
+        const closes = stockData.map(d => d.close);
+        const highs = stockData.map(d => d.high);
+        const lows = stockData.map(d => d.low);
+        const volumes = stockData.map(d => d.volume);
 
         const pythonCode = `
 import pandas as pd
 import numpy as np
-import yfinance as yf
-from datetime import datetime, timedelta
+from datetime import datetime
 
-# Fetch stock data
+# Create DataFrame from JavaScript data
+dates = ${JSON.stringify(dates)}
+closes = ${JSON.stringify(closes)}
+highs = ${JSON.stringify(highs)}
+lows = ${JSON.stringify(lows)}
+volumes = ${JSON.stringify(volumes)}
+
+df = pd.DataFrame({
+    'Date': pd.to_datetime(dates),
+    'Close': closes,
+    'High': highs,
+    'Low': lows,
+    'Volume': volumes
+})
+df = df.set_index('Date')
 symbol = "${symbol}"
-period = "${period}"
-
-print(f"Fetching {symbol} for {period}...")
-stock = yf.Ticker(symbol)
-df = stock.history(period=period)
-
-if len(df) == 0:
-    raise ValueError(f"No data found for {symbol}")
 
 print(f"Downloaded {len(df)} days of data")
 
