@@ -8,11 +8,23 @@ const loadingSection = document.getElementById('loadingSection');
 const resultSection = document.getElementById('resultSection');
 const errorSection = document.getElementById('errorSection');
 const loadingMessage = document.getElementById('loadingMessage');
+const progressBar = document.getElementById('progressBar');
+const progressText = document.getElementById('progressText');
 
 // Ready immediately - no Python to load
+console.log('Stock Predictor loaded successfully');
 predictBtn.disabled = false;
 predictBtn.textContent = '🔮 Fetch & Predict';
-document.getElementById('loadingPython').style.display = 'none';
+const loadingPython = document.getElementById('loadingPython');
+if (loadingPython) loadingPython.style.display = 'none';
+
+function updateProgress(percent, message) {
+    if (progressBar) {
+        progressBar.style.width = percent + '%';
+        if (progressText) progressText.textContent = percent + '%';
+    }
+    if (loadingMessage && message) loadingMessage.textContent = message;
+}
 
 predictBtn.addEventListener('click', handlePredict);
 stockSymbolInput.addEventListener('keypress', (e) => {
@@ -28,19 +40,28 @@ async function handlePredict() {
 
     hideAllSections();
     loadingSection.style.display = 'block';
-    loadingMessage.textContent = `Fetching data for ${symbol}...`;
+    updateProgress(0, `Initializing request for ${symbol}...`);
     predictBtn.disabled = true;
 
     try {
         const period = timePeriodSelect.value;
+
+        updateProgress(20, 'Fetching stock data from API...');
         const stockData = await fetchStockData(symbol, period);
 
         if (!stockData || stockData.length === 0) {
             throw new Error(`No data found for ${symbol}`);
         }
 
-        loadingMessage.textContent = 'Analyzing data...';
+        updateProgress(60, 'Calculating technical indicators...');
+        await new Promise(resolve => setTimeout(resolve, 300)); // Brief pause for UX
+
         const analysis = analyzeStock(stockData);
+
+        updateProgress(90, 'Generating charts...');
+        await new Promise(resolve => setTimeout(resolve, 200));
+
+        updateProgress(100, 'Complete!');
         displayResults(symbol, analysis, stockData);
 
     } catch (error) {
