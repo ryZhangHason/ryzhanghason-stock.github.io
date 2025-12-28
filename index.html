@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stock Price Predictor</title>
+    <link rel="stylesheet" href="css/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📈 Stock Price Predictor</h1>
+            <p>Powered by XGBoost Machine Learning</p>
+        </header>
+
+        <main>
+            <section class="input-section">
+                <div class="input-group">
+                    <label for="stockSymbol">Stock Symbol:</label>
+                    <input type="text" id="stockSymbol" placeholder="e.g., AAPL, TSLA, 6060.HK" value="AAPL">
+                </div>
+
+                <div class="input-group">
+                    <label for="timePeriod">Time Period:</label>
+                    <select id="timePeriod">
+                        <option value="6mo">6 Months</option>
+                        <option value="1y">1 Year</option>
+                        <option value="2y" selected>2 Years</option>
+                        <option value="5y">5 Years</option>
+                        <option value="max">Maximum</option>
+                    </select>
+                </div>
+
+                <div class="input-group">
+                    <label>
+                        <input type="checkbox" id="optimizeStrategy" checked>
+                        Optimize Trading Strategy
+                    </label>
+                </div>
+
+                <button id="predictBtn" class="predict-btn">
+                    🔮 Fetch & Predict
+                </button>
+            </section>
+
+            <section id="loadingSection" class="loading-section" style="display: none;">
+                <div class="spinner"></div>
+                <p>Analyzing stock data...</p>
+            </section>
+
+            <section id="resultSection" class="result-section" style="display: none;">
+                <div class="prediction-card">
+                    <h2>Prediction Result</h2>
+                    <div id="predictionResult" class="prediction-result"></div>
+                </div>
+
+                <div class="metrics-card">
+                    <h2>Model Performance</h2>
+                    <div id="metricsResult" class="metrics-content"></div>
+                </div>
+
+                <div class="chart-card">
+                    <h2>Stock Price Chart</h2>
+                    <canvas id="priceChart"></canvas>
+                </div>
+
+                <div class="chart-card">
+                    <h2>Composite Index</h2>
+                    <canvas id="compositeChart"></canvas>
+                </div>
+
+                <div class="chart-card">
+                    <h2>Strategy Performance</h2>
+                    <canvas id="strategyChart"></canvas>
+                </div>
+            </section>
+
+            <section id="errorSection" class="error-section" style="display: none;">
+                <div class="error-message">
+                    <h2>⚠️ Error</h2>
+                    <p id="errorMessage"></p>
+                </div>
+            </section>
+        </main>
+
+        <footer>
+            <p>Built with Python, XGBoost, and ❤️ | <a href="https://github.com/ryZhangHason" target="_blank">GitHub</a></p>
+        </footer>
+    </div>
+
+    <script src="js/app.js"></script>
+</body>
+</html>

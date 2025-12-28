@@ -1,0 +1,233 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    min-height: 100vh;
+    padding: 20px;
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    background: white;
+    border-radius: 20px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+    overflow: hidden;
+}
+
+header {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    padding: 40px;
+    text-align: center;
+}
+
+header h1 {
+    font-size: 2.5em;
+    margin-bottom: 10px;
+}
+
+header p {
+    font-size: 1.1em;
+    opacity: 0.9;
+}
+
+main {
+    padding: 40px;
+}
+
+.input-section {
+    background: #f7f9fc;
+    padding: 30px;
+    border-radius: 15px;
+    margin-bottom: 30px;
+}
+
+.input-group {
+    margin-bottom: 20px;
+}
+
+.input-group label {
+    display: block;
+    margin-bottom: 8px;
+    font-weight: 600;
+    color: #333;
+}
+
+.input-group input[type="text"],
+.input-group select {
+    width: 100%;
+    padding: 12px;
+    border: 2px solid #e0e0e0;
+    border-radius: 8px;
+    font-size: 16px;
+    transition: border-color 0.3s;
+}
+
+.input-group input[type="text"]:focus,
+.input-group select:focus {
+    outline: none;
+    border-color: #667eea;
+}
+
+.input-group input[type="checkbox"] {
+    margin-right: 8px;
+}
+
+.predict-btn {
+    width: 100%;
+    padding: 15px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    font-size: 18px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.predict-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 25px rgba(102, 126, 234, 0.4);
+}
+
+.predict-btn:active {
+    transform: translateY(0);
+}
+
+.loading-section {
+    text-align: center;
+    padding: 60px;
+}
+
+.spinner {
+    border: 4px solid #f3f3f3;
+    border-top: 4px solid #667eea;
+    border-radius: 50%;
+    width: 50px;
+    height: 50px;
+    animation: spin 1s linear infinite;
+    margin: 0 auto 20px;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+.result-section {
+    animation: fadeIn 0.5s;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.prediction-card,
+.metrics-card,
+.chart-card {
+    background: white;
+    border: 2px solid #e0e0e0;
+    border-radius: 15px;
+    padding: 25px;
+    margin-bottom: 25px;
+}
+
+.prediction-card h2,
+.metrics-card h2,
+.chart-card h2 {
+    color: #333;
+    margin-bottom: 20px;
+    font-size: 1.5em;
+}
+
+.prediction-result {
+    font-size: 1.8em;
+    font-weight: bold;
+    padding: 20px;
+    border-radius: 10px;
+    text-align: center;
+}
+
+.prediction-up {
+    background: #d4edda;
+    color: #155724;
+}
+
+.prediction-down {
+    background: #f8d7da;
+    color: #721c24;
+}
+
+.metrics-content {
+    font-family: 'Courier New', monospace;
+    background: #f7f9fc;
+    padding: 20px;
+    border-radius: 10px;
+    white-space: pre-wrap;
+    font-size: 14px;
+    line-height: 1.6;
+}
+
+.error-section {
+    padding: 40px;
+}
+
+.error-message {
+    background: #f8d7da;
+    border: 2px solid #f5c6cb;
+    border-radius: 10px;
+    padding: 30px;
+    text-align: center;
+}
+
+.error-message h2 {
+    color: #721c24;
+    margin-bottom: 15px;
+}
+
+.error-message p {
+    color: #721c24;
+}
+
+footer {
+    background: #f7f9fc;
+    padding: 20px;
+    text-align: center;
+    color: #666;
+}
+
+footer a {
+    color: #667eea;
+    text-decoration: none;
+}
+
+footer a:hover {
+    text-decoration: underline;
+}
+
+canvas {
+    max-width: 100%;
+    height: auto !important;
+}
+
+@media (max-width: 768px) {
+    header h1 {
+        font-size: 2em;
+    }
+
+    main {
+        padding: 20px;
+    }
+
+    .input-section {
+        padding: 20px;
+    }
+}
