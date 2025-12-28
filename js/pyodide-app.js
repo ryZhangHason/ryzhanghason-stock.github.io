@@ -121,7 +121,7 @@ import sys
 # Set up the ticker and period
 ticker = "${symbol}"
 period = "${period}"
-optimize_strategy = ${optimize}
+optimize_strategy = ${optimize ? 'True' : 'False'}
 
 print(f"Processing {ticker} for period {period}...")
 
