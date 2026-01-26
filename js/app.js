@@ -156,6 +156,48 @@ function displayMetrics(metrics, symbol) {
             if (oi.win_rate) metricsText += `Win Rate: ${oi.win_rate.toFixed(1)}%\n`;
             if (oi.profit_factor) metricsText += `Profit Factor: ${oi.profit_factor.toFixed(2)}\n`;
         }
+
+        // Display Alpha Factor Analysis
+        if (sm.alpha_interpretations && Object.keys(sm.alpha_interpretations).length > 0) {
+            metricsText += `\n${'='.repeat(40)}\n`;
+            metricsText += `ALPHA FACTOR ANALYSIS:\n`;
+            metricsText += `${'='.repeat(40)}\n`;
+            for (const [category, interpretation] of Object.entries(sm.alpha_interpretations)) {
+                metricsText += `${capitalizeFirst(category)}: ${interpretation}\n`;
+            }
+        }
+
+        // Display Trader Behavior Analysis
+        if (sm.behavior_summary && Object.keys(sm.behavior_summary).length > 0) {
+            const bs = sm.behavior_summary;
+            metricsText += `\n${'='.repeat(40)}\n`;
+            metricsText += `TRADER BEHAVIOR ANALYSIS:\n`;
+            metricsText += `${'='.repeat(40)}\n`;
+
+            if (bs.style) metricsText += `Strategy Style: ${bs.style}\n`;
+            if (bs.selectivity) metricsText += `Selectivity: ${bs.selectivity}\n`;
+
+            if (bs.long_exposure !== undefined) {
+                metricsText += `\nPosition Exposure:\n`;
+                metricsText += `  Long:  ${getPositionBar(bs.long_exposure)} ${bs.long_exposure.toFixed(0)}%\n`;
+                metricsText += `  Short: ${getPositionBar(bs.short_exposure)} ${bs.short_exposure.toFixed(0)}%\n`;
+                metricsText += `  Cash:  ${getPositionBar(bs.cash_exposure)} ${bs.cash_exposure.toFixed(0)}%\n`;
+            }
+
+            if (bs.primary_indicators && bs.primary_indicators.length > 0) {
+                metricsText += `\nPrimary Signals: ${bs.primary_indicators.join(', ')}\n`;
+            }
+            if (bs.confirmation_indicators && bs.confirmation_indicators.length > 0) {
+                metricsText += `Confirmation: ${bs.confirmation_indicators.join(', ')}\n`;
+            }
+
+            if (bs.summary && bs.summary.length > 0) {
+                metricsText += `\nStrategy Summary:\n`;
+                for (const line of bs.summary) {
+                    metricsText += `  - ${line}\n`;
+                }
+            }
+        }
     }
 
     metricsDiv.textContent = metricsText;
@@ -193,6 +235,16 @@ function getProgressBar(value) {
     const filled = Math.round(value * 10);
     const empty = 10 - filled;
     return '[' + '#'.repeat(filled) + '-'.repeat(empty) + ']';
+}
+
+function getPositionBar(value) {
+    const filled = Math.round(value / 10);
+    const empty = 10 - filled;
+    return '[' + '█'.repeat(filled) + '░'.repeat(empty) + ']';
+}
+
+function capitalizeFirst(str) {
+    return str.charAt(0).toUpperCase() + str.slice(1).replace(/_/g, ' ');
 }
 
 function displayPriceChart(priceData, symbol) {
