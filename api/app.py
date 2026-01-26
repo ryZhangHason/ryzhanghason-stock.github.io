@@ -65,13 +65,17 @@ def predict():
         optimization_info = None
 
         if optimize:
-            print(f"Running smart meta-learning optimization...")
+            print(f"Running smart meta-learning optimization with alpha factors...")
             optimizer = StrategyOptimizer(df_features_copy)
             optimal_thresholds = optimizer.optimize_thresholds(min_period=120)
 
             if optimal_thresholds:
                 df_features_copy = optimizer.apply_optimal_strategy(optimal_thresholds)
                 strategy_thresholds = optimal_thresholds
+
+                # Get behavior analysis and alpha summary
+                behavior_analysis = optimizer.get_behavior_analysis()
+                alpha_summary = optimizer.get_alpha_summary()
 
                 # Extract optimization info for frontend display
                 optimization_info = {
@@ -80,8 +84,44 @@ def predict():
                     'ensemble_weights': optimal_thresholds.get('ensemble_weights', {}),
                     'win_rate': optimal_thresholds.get('win_rate', 0),
                     'num_trades': optimal_thresholds.get('num_trades', 0),
-                    'profit_factor': optimal_thresholds.get('profit_factor', 0)
+                    'profit_factor': optimal_thresholds.get('profit_factor', 0),
+                    'key_alphas': optimal_thresholds.get('key_alphas', {}),
+                    'alpha_signals': optimal_thresholds.get('alpha_signals', {})
                 }
+
+                # Extract behavior analysis summary
+                behavior_summary = {}
+                if behavior_analysis:
+                    if 'strategy_profile' in behavior_analysis:
+                        sp = behavior_analysis['strategy_profile']
+                        behavior_summary['style'] = sp.get('style', 'Unknown')
+                        behavior_summary['selectivity'] = sp.get('selectivity', 'Unknown')
+                        behavior_summary['long_exposure'] = sp.get('long_exposure', 0)
+                        behavior_summary['short_exposure'] = sp.get('short_exposure', 0)
+                        behavior_summary['cash_exposure'] = sp.get('cash_exposure', 0)
+
+                    if 'indicator_usage' in behavior_analysis:
+                        iu = behavior_analysis['indicator_usage']
+                        behavior_summary['primary_indicators'] = [s['indicator'] for s in iu.get('primary_signals', [])]
+                        behavior_summary['confirmation_indicators'] = [s['indicator'] for s in iu.get('confirmation_signals', [])]
+
+                    if 'trading_summary' in behavior_analysis:
+                        behavior_summary['summary'] = behavior_analysis['trading_summary']
+
+                    if 'risk_profile' in behavior_analysis:
+                        rp = behavior_analysis['risk_profile']
+                        behavior_summary['risk_metrics'] = {
+                            'avg_daily_return': rp.get('avg_daily_return', 0),
+                            'max_drawdown': rp.get('max_drawdown', 0),
+                            'positive_days_pct': rp.get('positive_days_pct', 0)
+                        }
+
+                # Add alpha interpretations
+                alpha_interpretations = {}
+                if alpha_summary and 'message' not in alpha_summary:
+                    for category, data in alpha_summary.items():
+                        if isinstance(data, dict) and 'interpretation' in data:
+                            alpha_interpretations[category] = data['interpretation']
 
                 # Calculate strategy metrics
                 last_120 = df_features_copy.iloc[-120:]
@@ -94,7 +134,9 @@ def predict():
                     'alpha': optimal_thresholds.get('total_return', 0),
                     'beta': 1.0,
                     'trades': int(last_120['Position'].diff().fillna(0).abs().sum() / 2),
-                    'optimization_info': optimization_info
+                    'optimization_info': optimization_info,
+                    'behavior_summary': behavior_summary,
+                    'alpha_interpretations': alpha_interpretations
                 }
 
         df_features = df_features_copy

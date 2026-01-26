@@ -54,6 +54,773 @@ def validate_thresholds(buy_threshold, sell_threshold, min_gap=MIN_THRESHOLD_GAP
     return round(buy_threshold), round(sell_threshold)
 
 
+class AlphaFactorCalculator:
+    """
+    Calculates various alpha factors for the meta-learner to learn from.
+    These factors capture different market dynamics and predictive signals.
+    """
+
+    def __init__(self, lookback_short=5, lookback_medium=20, lookback_long=60):
+        self.lookback_short = lookback_short
+        self.lookback_medium = lookback_medium
+        self.lookback_long = lookback_long
+
+    def calculate_all_alphas(self, df):
+        """
+        Calculate all alpha factors from the dataframe.
+
+        Returns:
+        --------
+        dict : Dictionary of alpha factor values
+        """
+        if len(df) < self.lookback_long:
+            return self._default_alphas()
+
+        alphas = {}
+
+        # Momentum Alphas
+        alphas.update(self._momentum_alphas(df))
+
+        # Mean Reversion Alphas
+        alphas.update(self._mean_reversion_alphas(df))
+
+        # Volatility Alphas
+        alphas.update(self._volatility_alphas(df))
+
+        # Volume Alphas
+        alphas.update(self._volume_alphas(df))
+
+        # Technical Indicator Alphas
+        alphas.update(self._technical_alphas(df))
+
+        # Cross-Sectional / Relative Alphas
+        alphas.update(self._relative_alphas(df))
+
+        return alphas
+
+    def _momentum_alphas(self, df):
+        """Calculate momentum-based alpha factors."""
+        close = df['Close']
+        alphas = {}
+
+        # Price momentum at different horizons
+        alphas['momentum_5d'] = (close.iloc[-1] / close.iloc[-6] - 1) * 100 if len(close) > 5 else 0
+        alphas['momentum_10d'] = (close.iloc[-1] / close.iloc[-11] - 1) * 100 if len(close) > 10 else 0
+        alphas['momentum_20d'] = (close.iloc[-1] / close.iloc[-21] - 1) * 100 if len(close) > 20 else 0
+
+        # Momentum acceleration (change in momentum)
+        if len(close) > 10:
+            mom_recent = close.iloc[-1] / close.iloc[-6] - 1
+            mom_prior = close.iloc[-6] / close.iloc[-11] - 1
+            alphas['momentum_acceleration'] = (mom_recent - mom_prior) * 100
+        else:
+            alphas['momentum_acceleration'] = 0
+
+        # Rate of change smoothed
+        roc_5 = close.pct_change(5).iloc[-5:].mean() * 100 if len(close) > 5 else 0
+        alphas['roc_smoothed'] = roc_5
+
+        # Trend consistency (% of up days in lookback)
+        returns = close.pct_change().dropna()
+        alphas['trend_consistency_20d'] = (returns.iloc[-20:] > 0).mean() * 100 if len(returns) >= 20 else 50
+
+        return alphas
+
+    def _mean_reversion_alphas(self, df):
+        """Calculate mean reversion alpha factors."""
+        close = df['Close']
+        alphas = {}
+
+        # Distance from moving averages (z-score style)
+        if 'MA20' in df.columns:
+            ma20 = df['MA20'].iloc[-1]
+            std20 = close.iloc[-20:].std() if len(close) >= 20 else close.std()
+            alphas['zscore_ma20'] = (close.iloc[-1] - ma20) / std20 if std20 > 0 else 0
+        else:
+            alphas['zscore_ma20'] = 0
+
+        if 'MA50' in df.columns:
+            ma50 = df['MA50'].iloc[-1]
+            std50 = close.iloc[-50:].std() if len(close) >= 50 else close.std()
+            alphas['zscore_ma50'] = (close.iloc[-1] - ma50) / std50 if std50 > 0 else 0
+        else:
+            alphas['zscore_ma50'] = 0
+
+        # Bollinger Band position
+        if 'BB_pct' in df.columns:
+            alphas['bb_position'] = df['BB_pct'].iloc[-1] * 100 if not pd.isna(df['BB_pct'].iloc[-1]) else 50
+        else:
+            alphas['bb_position'] = 50
+
+        # RSI extremes (deviation from 50)
+        if 'RSI' in df.columns:
+            rsi = df['RSI'].iloc[-1]
+            alphas['rsi_extreme'] = abs(rsi - 50) if not pd.isna(rsi) else 0
+        else:
+            alphas['rsi_extreme'] = 0
+
+        # Price vs 52-week high/low (if enough data)
+        if len(close) >= 252:
+            high_52w = close.iloc[-252:].max()
+            low_52w = close.iloc[-252:].min()
+            range_52w = high_52w - low_52w
+            alphas['position_52w'] = ((close.iloc[-1] - low_52w) / range_52w * 100) if range_52w > 0 else 50
+        else:
+            alphas['position_52w'] = 50
+
+        return alphas
+
+    def _volatility_alphas(self, df):
+        """Calculate volatility-based alpha factors."""
+        close = df['Close']
+        returns = close.pct_change().dropna()
+        alphas = {}
+
+        # Historical volatility at different horizons
+        alphas['vol_5d'] = returns.iloc[-5:].std() * np.sqrt(252) * 100 if len(returns) >= 5 else 20
+        alphas['vol_20d'] = returns.iloc[-20:].std() * np.sqrt(252) * 100 if len(returns) >= 20 else 20
+
+        # Volatility ratio (short-term vs long-term)
+        if len(returns) >= 20:
+            vol_short = returns.iloc[-5:].std()
+            vol_long = returns.iloc[-20:].std()
+            alphas['vol_ratio'] = (vol_short / vol_long) if vol_long > 0 else 1
+        else:
+            alphas['vol_ratio'] = 1
+
+        # ATR-based volatility
+        if 'High' in df.columns and 'Low' in df.columns:
+            tr = pd.concat([
+                df['High'] - df['Low'],
+                abs(df['High'] - close.shift(1)),
+                abs(df['Low'] - close.shift(1))
+            ], axis=1).max(axis=1)
+            atr_14 = tr.iloc[-14:].mean() if len(tr) >= 14 else tr.mean()
+            alphas['atr_pct'] = (atr_14 / close.iloc[-1]) * 100 if close.iloc[-1] > 0 else 2
+        else:
+            alphas['atr_pct'] = 2
+
+        # Volatility trend (expanding or contracting)
+        if 'BB_width' in df.columns and len(df) >= 10:
+            bb_width_recent = df['BB_width'].iloc[-5:].mean()
+            bb_width_prior = df['BB_width'].iloc[-10:-5].mean()
+            alphas['vol_trend'] = ((bb_width_recent / bb_width_prior) - 1) * 100 if bb_width_prior > 0 else 0
+        else:
+            alphas['vol_trend'] = 0
+
+        return alphas
+
+    def _volume_alphas(self, df):
+        """Calculate volume-based alpha factors."""
+        alphas = {}
+
+        if 'Volume' not in df.columns:
+            return {'volume_ratio': 1, 'obv_trend': 0, 'volume_price_trend': 0, 'mfi_signal': 50}
+
+        volume = df['Volume']
+        close = df['Close']
+
+        # Volume ratio (recent vs average)
+        vol_avg_20 = volume.iloc[-20:].mean() if len(volume) >= 20 else volume.mean()
+        vol_recent = volume.iloc[-5:].mean() if len(volume) >= 5 else volume.mean()
+        alphas['volume_ratio'] = (vol_recent / vol_avg_20) if vol_avg_20 > 0 else 1
+
+        # OBV trend
+        if 'OBV' in df.columns and len(df) >= 10:
+            obv = df['OBV']
+            obv_recent = obv.iloc[-5:].mean()
+            obv_prior = obv.iloc[-10:-5].mean()
+            alphas['obv_trend'] = ((obv_recent / obv_prior) - 1) * 100 if obv_prior != 0 else 0
+        else:
+            alphas['obv_trend'] = 0
+
+        # Volume-price trend (positive volume on up days)
+        if len(df) >= 10:
+            returns = close.pct_change()
+            up_vol = volume[returns > 0].iloc[-10:].sum() if len(volume[returns > 0]) > 0 else 0
+            down_vol = volume[returns < 0].iloc[-10:].sum() if len(volume[returns < 0]) > 0 else 0
+            total_vol = up_vol + down_vol
+            alphas['volume_price_trend'] = ((up_vol - down_vol) / total_vol * 100) if total_vol > 0 else 0
+        else:
+            alphas['volume_price_trend'] = 0
+
+        # MFI signal
+        if 'MFI' in df.columns:
+            alphas['mfi_signal'] = df['MFI'].iloc[-1] if not pd.isna(df['MFI'].iloc[-1]) else 50
+        else:
+            alphas['mfi_signal'] = 50
+
+        return alphas
+
+    def _technical_alphas(self, df):
+        """Calculate technical indicator-based alpha factors."""
+        alphas = {}
+
+        # MACD histogram momentum
+        if 'MACD_hist' in df.columns and len(df) >= 5:
+            macd_hist = df['MACD_hist']
+            alphas['macd_momentum'] = macd_hist.iloc[-1] - macd_hist.iloc[-5] if not pd.isna(macd_hist.iloc[-1]) else 0
+            alphas['macd_signal'] = 1 if macd_hist.iloc[-1] > 0 else -1
+        else:
+            alphas['macd_momentum'] = 0
+            alphas['macd_signal'] = 0
+
+        # ADX trend strength
+        if 'ADX' in df.columns:
+            adx = df['ADX'].iloc[-1]
+            alphas['adx_strength'] = adx if not pd.isna(adx) else 25
+            alphas['strong_trend'] = 1 if adx > 25 else 0
+        else:
+            alphas['adx_strength'] = 25
+            alphas['strong_trend'] = 0
+
+        # Stochastic position
+        if 'Stoch_K' in df.columns and 'Stoch_D' in df.columns:
+            stoch_k = df['Stoch_K'].iloc[-1]
+            stoch_d = df['Stoch_D'].iloc[-1]
+            alphas['stoch_position'] = stoch_k if not pd.isna(stoch_k) else 50
+            alphas['stoch_crossover'] = 1 if stoch_k > stoch_d else -1
+        else:
+            alphas['stoch_position'] = 50
+            alphas['stoch_crossover'] = 0
+
+        # CCI signal
+        if 'CCI' in df.columns:
+            cci = df['CCI'].iloc[-1]
+            alphas['cci_signal'] = np.clip(cci / 100, -2, 2) if not pd.isna(cci) else 0
+        else:
+            alphas['cci_signal'] = 0
+
+        return alphas
+
+    def _relative_alphas(self, df):
+        """Calculate relative/cross-sectional alpha factors."""
+        alphas = {}
+        close = df['Close']
+
+        # Price relative to recent range
+        if len(close) >= 20:
+            high_20 = close.iloc[-20:].max()
+            low_20 = close.iloc[-20:].min()
+            range_20 = high_20 - low_20
+            alphas['range_position_20d'] = ((close.iloc[-1] - low_20) / range_20 * 100) if range_20 > 0 else 50
+        else:
+            alphas['range_position_20d'] = 50
+
+        # MA alignment score (bullish when short > medium > long)
+        if all(col in df.columns for col in ['MA5', 'MA20', 'MA50']):
+            ma5 = df['MA5'].iloc[-1]
+            ma20 = df['MA20'].iloc[-1]
+            ma50 = df['MA50'].iloc[-1]
+
+            if not any(pd.isna([ma5, ma20, ma50])):
+                alignment_score = 0
+                if ma5 > ma20:
+                    alignment_score += 1
+                if ma20 > ma50:
+                    alignment_score += 1
+                if close.iloc[-1] > ma5:
+                    alignment_score += 1
+                alphas['ma_alignment'] = alignment_score  # 0-3 scale
+            else:
+                alphas['ma_alignment'] = 1.5
+        else:
+            alphas['ma_alignment'] = 1.5
+
+        # Composite index position
+        if 'Composite_Index' in df.columns:
+            ci = df['Composite_Index'].iloc[-1]
+            alphas['composite_position'] = ci if not pd.isna(ci) else 50
+
+            # Composite momentum
+            if len(df) >= 5:
+                ci_mom = df['Composite_Index'].iloc[-1] - df['Composite_Index'].iloc[-5]
+                alphas['composite_momentum'] = ci_mom if not pd.isna(ci_mom) else 0
+            else:
+                alphas['composite_momentum'] = 0
+        else:
+            alphas['composite_position'] = 50
+            alphas['composite_momentum'] = 0
+
+        return alphas
+
+    def _default_alphas(self):
+        """Return default alpha values when insufficient data."""
+        return {
+            'momentum_5d': 0, 'momentum_10d': 0, 'momentum_20d': 0,
+            'momentum_acceleration': 0, 'roc_smoothed': 0, 'trend_consistency_20d': 50,
+            'zscore_ma20': 0, 'zscore_ma50': 0, 'bb_position': 50,
+            'rsi_extreme': 0, 'position_52w': 50,
+            'vol_5d': 20, 'vol_20d': 20, 'vol_ratio': 1, 'atr_pct': 2, 'vol_trend': 0,
+            'volume_ratio': 1, 'obv_trend': 0, 'volume_price_trend': 0, 'mfi_signal': 50,
+            'macd_momentum': 0, 'macd_signal': 0, 'adx_strength': 25, 'strong_trend': 0,
+            'stoch_position': 50, 'stoch_crossover': 0, 'cci_signal': 0,
+            'range_position_20d': 50, 'ma_alignment': 1.5,
+            'composite_position': 50, 'composite_momentum': 0
+        }
+
+    def get_alpha_importance(self, alphas):
+        """
+        Analyze which alpha factors are showing strong signals.
+
+        Returns:
+        --------
+        dict : Alpha factors with their signal strength and direction
+        """
+        signals = {}
+
+        # Momentum signals
+        if abs(alphas.get('momentum_20d', 0)) > 5:
+            signals['momentum'] = {
+                'strength': min(abs(alphas['momentum_20d']) / 10, 1),
+                'direction': 'bullish' if alphas['momentum_20d'] > 0 else 'bearish',
+                'value': alphas['momentum_20d']
+            }
+
+        # Mean reversion signals
+        zscore = alphas.get('zscore_ma20', 0)
+        if abs(zscore) > 1.5:
+            signals['mean_reversion'] = {
+                'strength': min(abs(zscore) / 3, 1),
+                'direction': 'oversold' if zscore < 0 else 'overbought',
+                'value': zscore
+            }
+
+        # Volatility signals
+        vol_ratio = alphas.get('vol_ratio', 1)
+        if vol_ratio > 1.5 or vol_ratio < 0.7:
+            signals['volatility'] = {
+                'strength': min(abs(vol_ratio - 1), 1),
+                'direction': 'expanding' if vol_ratio > 1 else 'contracting',
+                'value': vol_ratio
+            }
+
+        # Volume confirmation
+        vol_price = alphas.get('volume_price_trend', 0)
+        if abs(vol_price) > 30:
+            signals['volume'] = {
+                'strength': min(abs(vol_price) / 50, 1),
+                'direction': 'accumulation' if vol_price > 0 else 'distribution',
+                'value': vol_price
+            }
+
+        # Trend strength
+        if alphas.get('strong_trend', 0) == 1:
+            signals['trend'] = {
+                'strength': alphas.get('adx_strength', 25) / 50,
+                'direction': 'strong',
+                'value': alphas.get('adx_strength', 25)
+            }
+
+        return signals
+
+
+class TradingBehaviorAnalyzer:
+    """
+    Analyzes the trading behavior of the optimized strategy.
+    Provides insights into how the trader uses different indicators and data sources.
+    """
+
+    def __init__(self):
+        self.analysis = {}
+
+    def analyze_strategy(self, df, thresholds, alpha_factors=None):
+        """
+        Analyze the trading behavior of the optimized strategy.
+
+        Parameters:
+        -----------
+        df : pandas.DataFrame
+            DataFrame with strategy positions and indicators
+        thresholds : dict
+            Optimized thresholds
+        alpha_factors : dict, optional
+            Current alpha factor values
+
+        Returns:
+        --------
+        dict : Comprehensive behavioral analysis
+        """
+        if 'Position' not in df.columns:
+            return {'error': 'No position data available'}
+
+        analysis = {
+            'strategy_profile': self._analyze_strategy_profile(df, thresholds),
+            'entry_patterns': self._analyze_entry_patterns(df),
+            'exit_patterns': self._analyze_exit_patterns(df),
+            'indicator_usage': self._analyze_indicator_usage(df, thresholds),
+            'risk_profile': self._analyze_risk_profile(df),
+            'alpha_utilization': self._analyze_alpha_utilization(df, alpha_factors) if alpha_factors else {},
+            'trading_summary': self._generate_trading_summary(df, thresholds)
+        }
+
+        self.analysis = analysis
+        return analysis
+
+    def _analyze_strategy_profile(self, df, thresholds):
+        """Determine the overall strategy profile/style."""
+        positions = df['Position']
+        returns = df['Close'].pct_change()
+
+        # Calculate position statistics
+        long_pct = (positions == 1).mean() * 100
+        short_pct = (positions == -1).mean() * 100
+        cash_pct = (positions == 0).mean() * 100
+
+        # Determine strategy type
+        if long_pct > 60:
+            style = 'Aggressive Long-Biased'
+        elif short_pct > 40:
+            style = 'Defensive/Hedged'
+        elif cash_pct > 50:
+            style = 'Conservative/Selective'
+        else:
+            style = 'Balanced/Adaptive'
+
+        # Threshold analysis
+        threshold_spread = thresholds.get('buy_threshold', 60) - thresholds.get('sell_threshold', 40)
+        if threshold_spread > 30:
+            selectivity = 'Highly Selective'
+        elif threshold_spread > 20:
+            selectivity = 'Moderately Selective'
+        else:
+            selectivity = 'Active Trading'
+
+        return {
+            'style': style,
+            'selectivity': selectivity,
+            'long_exposure': round(long_pct, 1),
+            'short_exposure': round(short_pct, 1),
+            'cash_exposure': round(cash_pct, 1),
+            'threshold_spread': threshold_spread
+        }
+
+    def _analyze_entry_patterns(self, df):
+        """Analyze patterns around entry points."""
+        if 'Buy_Signal' not in df.columns or 'Sell_Signal' not in df.columns:
+            return {}
+
+        patterns = {'long_entries': [], 'short_entries': []}
+
+        # Analyze long entries
+        buy_signals = df[df['Buy_Signal'] == True]
+        if len(buy_signals) > 0:
+            for idx in buy_signals.index:
+                loc = df.index.get_loc(idx)
+                if loc >= 5:
+                    pre_entry = df.iloc[loc-5:loc]
+                    entry_pattern = {
+                        'composite_at_entry': df.at[idx, 'Composite_Index'] if 'Composite_Index' in df.columns else None,
+                        'rsi_at_entry': df.at[idx, 'RSI'] if 'RSI' in df.columns else None,
+                        'momentum_before': ((df.at[idx, 'Close'] / pre_entry['Close'].iloc[0]) - 1) * 100,
+                        'volume_spike': df.at[idx, 'Volume'] / pre_entry['Volume'].mean() if 'Volume' in df.columns else 1
+                    }
+                    patterns['long_entries'].append(entry_pattern)
+
+        # Summarize long entry patterns
+        if patterns['long_entries']:
+            patterns['avg_long_entry'] = {
+                'avg_composite': np.mean([p['composite_at_entry'] for p in patterns['long_entries'] if p['composite_at_entry']]),
+                'avg_rsi': np.mean([p['rsi_at_entry'] for p in patterns['long_entries'] if p['rsi_at_entry']]),
+                'avg_momentum': np.mean([p['momentum_before'] for p in patterns['long_entries']]),
+                'avg_volume_spike': np.mean([p['volume_spike'] for p in patterns['long_entries']])
+            }
+
+        # Analyze short entries similarly
+        sell_signals = df[df['Sell_Signal'] == True]
+        if len(sell_signals) > 0:
+            for idx in sell_signals.index:
+                loc = df.index.get_loc(idx)
+                if loc >= 5:
+                    pre_entry = df.iloc[loc-5:loc]
+                    entry_pattern = {
+                        'composite_at_entry': df.at[idx, 'Composite_Index'] if 'Composite_Index' in df.columns else None,
+                        'rsi_at_entry': df.at[idx, 'RSI'] if 'RSI' in df.columns else None,
+                        'momentum_before': ((df.at[idx, 'Close'] / pre_entry['Close'].iloc[0]) - 1) * 100,
+                    }
+                    patterns['short_entries'].append(entry_pattern)
+
+        if patterns['short_entries']:
+            patterns['avg_short_entry'] = {
+                'avg_composite': np.mean([p['composite_at_entry'] for p in patterns['short_entries'] if p['composite_at_entry']]),
+                'avg_rsi': np.mean([p['rsi_at_entry'] for p in patterns['short_entries'] if p['rsi_at_entry']]),
+                'avg_momentum': np.mean([p['momentum_before'] for p in patterns['short_entries']])
+            }
+
+        patterns['total_long_entries'] = len(patterns['long_entries'])
+        patterns['total_short_entries'] = len(patterns['short_entries'])
+
+        return patterns
+
+    def _analyze_exit_patterns(self, df):
+        """Analyze patterns around exit points."""
+        if 'Exit_Signal' not in df.columns:
+            return {}
+
+        exit_signals = df[df['Exit_Signal'] == True]
+        patterns = {'exits': [], 'profit_exits': 0, 'loss_exits': 0}
+
+        if len(exit_signals) > 0 and 'Strategy_Return' in df.columns:
+            for idx in exit_signals.index:
+                loc = df.index.get_loc(idx)
+                if loc >= 1:
+                    # Calculate trade return (approximate)
+                    prev_position = df['Position'].iloc[loc-1]
+                    if prev_position != 0:
+                        # Look back to find entry
+                        entry_loc = loc - 1
+                        while entry_loc > 0 and df['Position'].iloc[entry_loc-1] == prev_position:
+                            entry_loc -= 1
+
+                        trade_return = df['Strategy_Return'].iloc[entry_loc:loc].sum()
+                        patterns['exits'].append({
+                            'return': trade_return * 100,
+                            'duration': loc - entry_loc,
+                            'composite_at_exit': df.at[idx, 'Composite_Index'] if 'Composite_Index' in df.columns else None
+                        })
+
+                        if trade_return > 0:
+                            patterns['profit_exits'] += 1
+                        else:
+                            patterns['loss_exits'] += 1
+
+        if patterns['exits']:
+            patterns['avg_trade_return'] = np.mean([e['return'] for e in patterns['exits']])
+            patterns['avg_trade_duration'] = np.mean([e['duration'] for e in patterns['exits']])
+            patterns['win_rate'] = patterns['profit_exits'] / len(patterns['exits']) * 100
+
+        return patterns
+
+    def _analyze_indicator_usage(self, df, thresholds):
+        """Analyze how different indicators contribute to trading decisions."""
+        usage = {
+            'primary_signals': [],
+            'confirmation_signals': [],
+            'filter_signals': []
+        }
+
+        # Composite Index is primary
+        usage['primary_signals'].append({
+            'indicator': 'Composite Index',
+            'role': 'Primary decision driver',
+            'buy_condition': f'>= {thresholds.get("buy_threshold", 60)}',
+            'sell_condition': f'<= {thresholds.get("sell_threshold", 40)}',
+            'weight': 'High'
+        })
+
+        # Analyze correlation of indicators with positions
+        if 'Position' in df.columns:
+            position = df['Position']
+
+            # RSI correlation
+            if 'RSI' in df.columns:
+                rsi_corr = position.corr(df['RSI'])
+                usage['confirmation_signals'].append({
+                    'indicator': 'RSI',
+                    'correlation_with_position': round(rsi_corr, 3) if not pd.isna(rsi_corr) else 0,
+                    'role': 'Momentum confirmation',
+                    'weight': 'Medium'
+                })
+
+            # MACD correlation
+            if 'MACD_hist' in df.columns:
+                macd_corr = position.corr(df['MACD_hist'])
+                usage['confirmation_signals'].append({
+                    'indicator': 'MACD Histogram',
+                    'correlation_with_position': round(macd_corr, 3) if not pd.isna(macd_corr) else 0,
+                    'role': 'Trend confirmation',
+                    'weight': 'Medium'
+                })
+
+            # ADX as filter
+            if 'ADX' in df.columns:
+                avg_adx_in_trade = df[position != 0]['ADX'].mean() if len(df[position != 0]) > 0 else 0
+                usage['filter_signals'].append({
+                    'indicator': 'ADX',
+                    'avg_during_trades': round(avg_adx_in_trade, 1) if not pd.isna(avg_adx_in_trade) else 25,
+                    'role': 'Trend strength filter',
+                    'weight': 'Low-Medium'
+                })
+
+            # Volume as confirmation
+            if 'Volume' in df.columns:
+                vol_mean = df['Volume'].mean()
+                vol_in_trades = df[position != 0]['Volume'].mean() if len(df[position != 0]) > 0 else vol_mean
+                usage['filter_signals'].append({
+                    'indicator': 'Volume',
+                    'avg_ratio_during_trades': round(vol_in_trades / vol_mean, 2) if vol_mean > 0 else 1,
+                    'role': 'Entry confirmation',
+                    'weight': 'Low'
+                })
+
+        return usage
+
+    def _analyze_risk_profile(self, df):
+        """Analyze the risk management characteristics."""
+        if 'Strategy_Return' not in df.columns:
+            return {}
+
+        returns = df['Strategy_Return'].dropna()
+
+        profile = {
+            'avg_daily_return': returns.mean() * 100,
+            'return_volatility': returns.std() * 100,
+            'max_daily_gain': returns.max() * 100,
+            'max_daily_loss': returns.min() * 100,
+            'positive_days_pct': (returns > 0).mean() * 100
+        }
+
+        # Drawdown analysis
+        if 'Strategy_Drawdown' in df.columns:
+            dd = df['Strategy_Drawdown']
+            profile['max_drawdown'] = dd.min() * 100
+            profile['avg_drawdown'] = dd[dd < 0].mean() * 100 if len(dd[dd < 0]) > 0 else 0
+
+        # Risk-adjusted metrics
+        if returns.std() > 0:
+            profile['sharpe_estimate'] = (returns.mean() / returns.std()) * np.sqrt(252)
+
+        # Tail risk
+        profile['var_95'] = np.percentile(returns, 5) * 100  # 95% VaR
+        profile['cvar_95'] = returns[returns <= np.percentile(returns, 5)].mean() * 100 if len(returns) > 0 else 0
+
+        return profile
+
+    def _analyze_alpha_utilization(self, df, alpha_factors):
+        """Analyze how alpha factors relate to strategy performance."""
+        if not alpha_factors:
+            return {}
+
+        utilization = {
+            'active_alphas': [],
+            'alpha_summary': {}
+        }
+
+        # Identify which alphas are showing strong signals
+        for alpha_name, value in alpha_factors.items():
+            if isinstance(value, (int, float)) and not pd.isna(value):
+                # Determine if alpha is active/significant
+                if 'momentum' in alpha_name and abs(value) > 3:
+                    utilization['active_alphas'].append({
+                        'name': alpha_name,
+                        'value': round(value, 2),
+                        'signal': 'bullish' if value > 0 else 'bearish'
+                    })
+                elif 'zscore' in alpha_name and abs(value) > 1:
+                    utilization['active_alphas'].append({
+                        'name': alpha_name,
+                        'value': round(value, 2),
+                        'signal': 'oversold' if value < 0 else 'overbought'
+                    })
+                elif 'vol_ratio' in alpha_name and (value > 1.3 or value < 0.7):
+                    utilization['active_alphas'].append({
+                        'name': alpha_name,
+                        'value': round(value, 2),
+                        'signal': 'high volatility' if value > 1 else 'low volatility'
+                    })
+
+        # Categorize alphas
+        momentum_alphas = {k: v for k, v in alpha_factors.items() if 'momentum' in k.lower() or 'trend' in k.lower()}
+        reversion_alphas = {k: v for k, v in alpha_factors.items() if 'zscore' in k.lower() or 'bb_' in k.lower() or 'rsi' in k.lower()}
+        vol_alphas = {k: v for k, v in alpha_factors.items() if 'vol' in k.lower() or 'atr' in k.lower()}
+
+        utilization['alpha_summary'] = {
+            'momentum_signal': 'bullish' if np.mean([v for v in momentum_alphas.values() if isinstance(v, (int, float))]) > 0 else 'bearish',
+            'reversion_signal': 'oversold' if np.mean([v for v in reversion_alphas.values() if isinstance(v, (int, float)) and 'zscore' in str(v)]) < 0 else 'overbought',
+            'volatility_regime': 'high' if alpha_factors.get('vol_ratio', 1) > 1.2 else 'normal'
+        }
+
+        return utilization
+
+    def _generate_trading_summary(self, df, thresholds):
+        """Generate a human-readable trading summary."""
+        summary = []
+
+        # Strategy style
+        profile = self._analyze_strategy_profile(df, thresholds)
+        summary.append(f"Strategy Style: {profile['style']}")
+        summary.append(f"Selectivity: {profile['selectivity']}")
+
+        # Position breakdown
+        summary.append(f"Position Mix: {profile['long_exposure']:.0f}% Long, {profile['short_exposure']:.0f}% Short, {profile['cash_exposure']:.0f}% Cash")
+
+        # Threshold interpretation
+        buy_th = thresholds.get('buy_threshold', 60)
+        sell_th = thresholds.get('sell_threshold', 40)
+
+        if buy_th >= 70:
+            summary.append("Entry Stance: Very conservative, waits for strong bullish signals")
+        elif buy_th >= 60:
+            summary.append("Entry Stance: Moderately selective, prefers confirmed uptrends")
+        else:
+            summary.append("Entry Stance: Aggressive, enters on early signals")
+
+        if sell_th <= 30:
+            summary.append("Exit Stance: Tolerant of pullbacks, holds through volatility")
+        elif sell_th <= 40:
+            summary.append("Exit Stance: Balanced risk management")
+        else:
+            summary.append("Exit Stance: Quick to exit, prioritizes capital preservation")
+
+        return summary
+
+    def get_behavior_report(self):
+        """Generate a formatted behavior report."""
+        if not self.analysis:
+            return "No analysis available. Run analyze_strategy() first."
+
+        report = []
+        report.append("=" * 50)
+        report.append("TRADING BEHAVIOR ANALYSIS REPORT")
+        report.append("=" * 50)
+
+        # Strategy Profile
+        if 'strategy_profile' in self.analysis:
+            sp = self.analysis['strategy_profile']
+            report.append(f"\n[Strategy Profile]")
+            report.append(f"  Style: {sp.get('style', 'N/A')}")
+            report.append(f"  Selectivity: {sp.get('selectivity', 'N/A')}")
+            report.append(f"  Exposure: {sp.get('long_exposure', 0):.1f}% Long / {sp.get('short_exposure', 0):.1f}% Short / {sp.get('cash_exposure', 0):.1f}% Cash")
+
+        # Entry Patterns
+        if 'entry_patterns' in self.analysis:
+            ep = self.analysis['entry_patterns']
+            report.append(f"\n[Entry Patterns]")
+            report.append(f"  Total Entries: {ep.get('total_long_entries', 0)} Long, {ep.get('total_short_entries', 0)} Short")
+            if 'avg_long_entry' in ep:
+                ale = ep['avg_long_entry']
+                report.append(f"  Avg Long Entry: Composite={ale.get('avg_composite', 0):.1f}, RSI={ale.get('avg_rsi', 0):.1f}")
+
+        # Risk Profile
+        if 'risk_profile' in self.analysis:
+            rp = self.analysis['risk_profile']
+            report.append(f"\n[Risk Profile]")
+            report.append(f"  Avg Daily Return: {rp.get('avg_daily_return', 0):.3f}%")
+            report.append(f"  Max Drawdown: {rp.get('max_drawdown', 0):.2f}%")
+            report.append(f"  Win Rate: {rp.get('positive_days_pct', 0):.1f}%")
+            if 'sharpe_estimate' in rp:
+                report.append(f"  Sharpe Ratio (est): {rp['sharpe_estimate']:.2f}")
+
+        # Indicator Usage
+        if 'indicator_usage' in self.analysis:
+            iu = self.analysis['indicator_usage']
+            report.append(f"\n[Indicator Usage]")
+            for sig in iu.get('primary_signals', []):
+                report.append(f"  PRIMARY: {sig['indicator']} - {sig['role']}")
+            for sig in iu.get('confirmation_signals', []):
+                report.append(f"  CONFIRM: {sig['indicator']} (corr={sig.get('correlation_with_position', 0):.2f})")
+
+        # Trading Summary
+        if 'trading_summary' in self.analysis:
+            report.append(f"\n[Summary]")
+            for line in self.analysis['trading_summary']:
+                report.append(f"  {line}")
+
+        report.append("\n" + "=" * 50)
+
+        return "\n".join(report)
+
+
 class MarketRegimeDetector:
     """
     Detects market regimes using multiple indicators:
@@ -180,7 +947,7 @@ class MarketRegimeDetector:
 class MetaLearner:
     """
     Meta-learner that predicts optimal strategy parameters based on market conditions.
-    Uses historical performance data to learn which parameters work best in different regimes.
+    Uses historical performance data and alpha factors to learn which parameters work best.
     """
 
     def __init__(self):
@@ -188,10 +955,25 @@ class MetaLearner:
         self.sell_threshold_model = None
         self.scaler = StandardScaler()
         self.is_trained = False
-        self.feature_columns = [
+
+        # Core regime features
+        self.regime_feature_columns = [
             'slope', 'volatility', 'adx', 'rsi', 'bb_width',
             'price_vs_ma20', 'price_vs_ma50', 'composite_trend'
         ]
+
+        # Alpha factor features for enhanced learning
+        self.alpha_feature_columns = [
+            'momentum_20d', 'momentum_acceleration', 'trend_consistency_20d',
+            'zscore_ma20', 'bb_position', 'rsi_extreme',
+            'vol_ratio', 'atr_pct', 'vol_trend',
+            'volume_ratio', 'volume_price_trend', 'mfi_signal',
+            'macd_momentum', 'adx_strength', 'stoch_position',
+            'range_position_20d', 'ma_alignment', 'composite_position'
+        ]
+
+        # Combined feature columns for ML
+        self.feature_columns = self.regime_feature_columns + self.alpha_feature_columns
 
         # Default parameters for each regime (prior knowledge)
         self.regime_defaults = {
@@ -553,9 +1335,10 @@ class StrategyOptimizer:
 
     Combines multiple optimization approaches:
     1. Market Regime Detection - adapts to market conditions
-    2. Meta-Learning - learns optimal parameters from historical performance
+    2. Meta-Learning with Alpha Factors - learns optimal parameters from market features
     3. Walk-Forward Optimization - prevents overfitting
     4. Ensemble Methods - combines multiple strategies
+    5. Behavioral Analysis - explains how the trader uses different indicators
     """
 
     def __init__(self, df):
@@ -563,9 +1346,13 @@ class StrategyOptimizer:
         self.results = None
         self.regime_detector = MarketRegimeDetector()
         self.meta_learner = MetaLearner()
+        self.alpha_calculator = AlphaFactorCalculator()
+        self.behavior_analyzer = TradingBehaviorAnalyzer()
         self.walk_forward = WalkForwardOptimizer(train_window=60, test_window=20, n_splits=5)
         self.ensemble = StrategyEnsemble()
         self.optimization_history = []
+        self.current_alphas = {}
+        self.behavior_analysis = {}
 
     def calculate_returns(self, buy_threshold, sell_threshold, exit_buy_threshold=None,
                           exit_sell_threshold=None, df=None):
@@ -680,7 +1467,7 @@ class StrategyOptimizer:
 
     def optimize_thresholds(self, min_period=0):
         """
-        Smart optimization using meta-learning approach.
+        Smart optimization using meta-learning approach with alpha factors.
 
         Parameters:
         -----------
@@ -689,7 +1476,7 @@ class StrategyOptimizer:
 
         Returns:
         --------
-        dict : Optimal thresholds and performance metrics
+        dict : Optimal thresholds, performance metrics, alpha factors, and behavior analysis
         """
         if 'Composite_Index' not in self.df.columns:
             return None
@@ -704,31 +1491,39 @@ class StrategyOptimizer:
         self.df = df
 
         try:
-            print("Starting smart optimization...")
+            print("Starting smart optimization with alpha factors...")
 
             # Step 1: Detect market regime
             regime, regime_features = self.regime_detector.detect_regime(df)
             print(f"Detected regime: {regime}")
 
-            # Step 2: Get regime-based parameters
+            # Step 2: Calculate alpha factors
+            self.current_alphas = self.alpha_calculator.calculate_all_alphas(df)
+            alpha_signals = self.alpha_calculator.get_alpha_importance(self.current_alphas)
+            print(f"Active alpha signals: {len(alpha_signals)}")
+
+            # Step 3: Merge regime features with alpha factors for meta-learner
+            combined_features = {**regime_features, **self.current_alphas}
+
+            # Step 4: Get regime-based parameters
             regime_params = self.meta_learner.regime_defaults.get(
                 regime,
                 self.meta_learner.regime_defaults[MarketRegimeDetector.REGIME_RANGING]
             )
 
-            # Step 3: Get meta-learner predictions
-            meta_params = self.meta_learner.predict_parameters(regime_features, regime)
+            # Step 5: Get meta-learner predictions using combined features
+            meta_params = self.meta_learner.predict_parameters(combined_features, regime)
 
-            # Step 4: Perform walk-forward optimization
+            # Step 6: Perform walk-forward optimization
             walk_forward_params, wf_history = self.walk_forward.optimize(
                 df,
                 lambda d, b, s: self.calculate_returns(b, s, df=d)
             )
 
-            # Step 5: Initialize ensemble with all strategies
+            # Step 7: Initialize ensemble with all strategies
             self.ensemble.initialize_strategies(regime_params, meta_params, walk_forward_params)
 
-            # Step 6: Evaluate each strategy and update weights
+            # Step 8: Evaluate each strategy and update weights
             performances = []
             for strategy in self.ensemble.strategies:
                 result = self.calculate_returns(
@@ -741,13 +1536,13 @@ class StrategyOptimizer:
 
             self.ensemble.update_weights(performances)
 
-            # Step 7: Get ensemble parameters
+            # Step 9: Get ensemble parameters
             ensemble_params = self.ensemble.get_ensemble_parameters()
 
-            # Step 8: Fine-tune around ensemble parameters using local search
+            # Step 10: Fine-tune around ensemble parameters using local search
             best_params = self._local_search_optimization(ensemble_params)
 
-            # Step 9: Calculate final metrics
+            # Step 11: Calculate final metrics
             exit_buy = best_params['sell_threshold'] + best_params.get('exit_buy_offset', 5)
             exit_sell = best_params['buy_threshold'] - best_params.get('exit_sell_offset', 5)
 
@@ -758,9 +1553,9 @@ class StrategyOptimizer:
                 exit_sell
             )
 
-            # Store optimization history for meta-learning
+            # Store optimization history for meta-learning (with alpha factors)
             self.optimization_history.append({
-                'features': regime_features,
+                'features': combined_features,
                 'optimal_params': best_params,
                 'performance': final_result
             })
@@ -781,7 +1576,16 @@ class StrategyOptimizer:
                 'ensemble_weights': {
                     s['name']: w for s, w in zip(self.ensemble.strategies, self.ensemble.weights)
                 },
-                'optimization_method': 'meta_learning_ensemble'
+                'optimization_method': 'meta_learning_ensemble',
+                'alpha_signals': alpha_signals,
+                'key_alphas': {
+                    'momentum_20d': self.current_alphas.get('momentum_20d', 0),
+                    'vol_ratio': self.current_alphas.get('vol_ratio', 1),
+                    'zscore_ma20': self.current_alphas.get('zscore_ma20', 0),
+                    'trend_consistency': self.current_alphas.get('trend_consistency_20d', 50),
+                    'volume_price_trend': self.current_alphas.get('volume_price_trend', 0),
+                    'ma_alignment': self.current_alphas.get('ma_alignment', 1.5)
+                }
             }
 
             print(f"Optimization complete: buy={best_params['buy_threshold']}, sell={best_params['sell_threshold']}, sharpe={final_result['sharpe_ratio']:.2f}")
@@ -790,6 +1594,8 @@ class StrategyOptimizer:
 
         except Exception as e:
             print(f"Error in optimize_thresholds: {str(e)}")
+            import traceback
+            traceback.print_exc()
             self.df = original_df
             # Fallback to simple grid search
             return self._fallback_optimization()
@@ -1033,4 +1839,156 @@ class StrategyOptimizer:
         df['Sell_Signal'] = (df['Position'].shift(1) == 0) & (df['Position'] == -1)
         df['Exit_Signal'] = ((df['Position'].shift(1) != 0) & (df['Position'] == 0))
 
+        # Analyze trading behavior
+        self.behavior_analysis = self.behavior_analyzer.analyze_strategy(
+            df, thresholds, self.current_alphas
+        )
+
         return df
+
+    def get_behavior_analysis(self):
+        """
+        Get the behavioral pattern analysis of the optimized trader.
+
+        Returns:
+        --------
+        dict : Comprehensive analysis of trading behavior
+        """
+        return self.behavior_analysis
+
+    def get_behavior_report(self):
+        """
+        Get a formatted human-readable behavior report.
+
+        Returns:
+        --------
+        str : Formatted report string
+        """
+        return self.behavior_analyzer.get_behavior_report()
+
+    def get_alpha_summary(self):
+        """
+        Get a summary of current alpha factor values and their signals.
+
+        Returns:
+        --------
+        dict : Alpha factors summary with interpretations
+        """
+        if not self.current_alphas:
+            return {'message': 'No alpha factors calculated yet. Run optimize_thresholds() first.'}
+
+        summary = {
+            'momentum': {
+                'short_term': self.current_alphas.get('momentum_5d', 0),
+                'medium_term': self.current_alphas.get('momentum_20d', 0),
+                'acceleration': self.current_alphas.get('momentum_acceleration', 0),
+                'interpretation': self._interpret_momentum()
+            },
+            'mean_reversion': {
+                'zscore_ma20': self.current_alphas.get('zscore_ma20', 0),
+                'bb_position': self.current_alphas.get('bb_position', 50),
+                'rsi_extreme': self.current_alphas.get('rsi_extreme', 0),
+                'interpretation': self._interpret_mean_reversion()
+            },
+            'volatility': {
+                'vol_5d': self.current_alphas.get('vol_5d', 20),
+                'vol_ratio': self.current_alphas.get('vol_ratio', 1),
+                'atr_pct': self.current_alphas.get('atr_pct', 2),
+                'interpretation': self._interpret_volatility()
+            },
+            'volume': {
+                'volume_ratio': self.current_alphas.get('volume_ratio', 1),
+                'volume_price_trend': self.current_alphas.get('volume_price_trend', 0),
+                'mfi_signal': self.current_alphas.get('mfi_signal', 50),
+                'interpretation': self._interpret_volume()
+            },
+            'trend': {
+                'adx_strength': self.current_alphas.get('adx_strength', 25),
+                'ma_alignment': self.current_alphas.get('ma_alignment', 1.5),
+                'trend_consistency': self.current_alphas.get('trend_consistency_20d', 50),
+                'interpretation': self._interpret_trend()
+            }
+        }
+
+        return summary
+
+    def _interpret_momentum(self):
+        """Interpret momentum alpha factors."""
+        mom_20d = self.current_alphas.get('momentum_20d', 0)
+        accel = self.current_alphas.get('momentum_acceleration', 0)
+
+        if mom_20d > 5 and accel > 0:
+            return "Strong bullish momentum with acceleration"
+        elif mom_20d > 5:
+            return "Positive momentum, but slowing"
+        elif mom_20d < -5 and accel < 0:
+            return "Strong bearish momentum with acceleration"
+        elif mom_20d < -5:
+            return "Negative momentum, but stabilizing"
+        else:
+            return "Neutral momentum"
+
+    def _interpret_mean_reversion(self):
+        """Interpret mean reversion alpha factors."""
+        zscore = self.current_alphas.get('zscore_ma20', 0)
+        bb_pos = self.current_alphas.get('bb_position', 50)
+
+        if zscore < -2 or bb_pos < 10:
+            return "Extremely oversold - potential bounce"
+        elif zscore < -1 or bb_pos < 25:
+            return "Oversold conditions"
+        elif zscore > 2 or bb_pos > 90:
+            return "Extremely overbought - potential pullback"
+        elif zscore > 1 or bb_pos > 75:
+            return "Overbought conditions"
+        else:
+            return "Neutral - near fair value"
+
+    def _interpret_volatility(self):
+        """Interpret volatility alpha factors."""
+        vol_ratio = self.current_alphas.get('vol_ratio', 1)
+        vol_5d = self.current_alphas.get('vol_5d', 20)
+
+        if vol_ratio > 1.5:
+            return "Volatility expanding significantly - exercise caution"
+        elif vol_ratio > 1.2:
+            return "Volatility slightly elevated"
+        elif vol_ratio < 0.7:
+            return "Volatility contracting - potential breakout setup"
+        elif vol_ratio < 0.8:
+            return "Low volatility environment"
+        else:
+            return "Normal volatility conditions"
+
+    def _interpret_volume(self):
+        """Interpret volume alpha factors."""
+        vol_ratio = self.current_alphas.get('volume_ratio', 1)
+        vpt = self.current_alphas.get('volume_price_trend', 0)
+
+        if vol_ratio > 1.5 and vpt > 30:
+            return "High volume accumulation - bullish"
+        elif vol_ratio > 1.5 and vpt < -30:
+            return "High volume distribution - bearish"
+        elif vol_ratio > 1.3:
+            return "Above average volume activity"
+        elif vol_ratio < 0.7:
+            return "Low volume - potential consolidation"
+        else:
+            return "Normal volume activity"
+
+    def _interpret_trend(self):
+        """Interpret trend alpha factors."""
+        adx = self.current_alphas.get('adx_strength', 25)
+        ma_align = self.current_alphas.get('ma_alignment', 1.5)
+        consistency = self.current_alphas.get('trend_consistency_20d', 50)
+
+        if adx > 30 and ma_align >= 2.5:
+            return "Strong uptrend with aligned MAs"
+        elif adx > 30 and ma_align <= 0.5:
+            return "Strong downtrend with aligned MAs"
+        elif adx > 25:
+            return "Moderate trend in progress"
+        elif adx < 20:
+            return "Weak trend / ranging market"
+        else:
+            return "Transitional trend state"
