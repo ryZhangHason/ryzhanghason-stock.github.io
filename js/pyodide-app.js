@@ -256,11 +256,13 @@ chart_data = {
     'bb_lower': [float(x) if 'BB_lower' in last_60.columns and not pd.isna(x) else None for x in (last_60['BB_lower'] if 'BB_lower' in last_60.columns else [None] * len(last_60))]
 }
 
-# Composite index chart data
+# Composite index chart data with thresholds
 composite_data = {
     'dates': chart_data['dates'],
     'index': [float(x) if not pd.isna(x) else 50.0 for x in composite_index.tail(60)],
-    'close': chart_data['close']
+    'close': chart_data['close'],
+    'buy_threshold': optimization_info['buy_threshold'] if optimization_info else 60,
+    'sell_threshold': optimization_info['sell_threshold'] if optimization_info else 40
 }
 
 # Strategy chart data (now using smart optimizer output)
@@ -452,6 +454,14 @@ function displayCompositeChart(compositeData) {
         compositeChart.destroy();
     }
 
+    const buyThreshold = compositeData.buy_threshold || 60;
+    const sellThreshold = compositeData.sell_threshold || 40;
+    const numPoints = compositeData.dates.length;
+
+    // Create threshold line data (horizontal lines across all dates)
+    const buyThresholdLine = Array(numPoints).fill(buyThreshold);
+    const sellThresholdLine = Array(numPoints).fill(sellThreshold);
+
     compositeChart = new Chart(ctx, {
         type: 'line',
         data: {
@@ -464,6 +474,24 @@ function displayCompositeChart(compositeData) {
                 tension: 0.3,
                 borderWidth: 2,
                 fill: true,
+                yAxisID: 'y'
+            }, {
+                label: `Buy Threshold (${buyThreshold})`,
+                data: buyThresholdLine,
+                borderColor: 'rgb(34, 197, 94)',
+                borderDash: [8, 4],
+                borderWidth: 2,
+                pointRadius: 0,
+                fill: false,
+                yAxisID: 'y'
+            }, {
+                label: `Sell Threshold (${sellThreshold})`,
+                data: sellThresholdLine,
+                borderColor: 'rgb(239, 68, 68)',
+                borderDash: [8, 4],
+                borderWidth: 2,
+                pointRadius: 0,
+                fill: false,
                 yAxisID: 'y'
             }, {
                 label: 'Stock Price',
@@ -485,7 +513,7 @@ function displayCompositeChart(compositeData) {
             plugins: {
                 title: {
                     display: true,
-                    text: 'Composite Index & Stock Price',
+                    text: 'Composite Index with Buy/Sell Thresholds',
                     font: { size: 16 }
                 }
             },

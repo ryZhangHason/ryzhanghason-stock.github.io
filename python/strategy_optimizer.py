@@ -8,6 +8,52 @@ import warnings
 warnings.filterwarnings('ignore')
 
 
+# Minimum gap between buy and sell thresholds
+MIN_THRESHOLD_GAP = 15
+
+
+def validate_thresholds(buy_threshold, sell_threshold, min_gap=MIN_THRESHOLD_GAP):
+    """
+    Validate and correct thresholds to ensure buy > sell with minimum gap.
+
+    Parameters:
+    -----------
+    buy_threshold : float
+        Buy threshold value
+    sell_threshold : float
+        Sell threshold value
+    min_gap : float
+        Minimum required gap between buy and sell
+
+    Returns:
+    --------
+    tuple : (corrected_buy, corrected_sell)
+    """
+    # Ensure valid ranges first
+    buy_threshold = np.clip(buy_threshold, 50, 80)
+    sell_threshold = np.clip(sell_threshold, 20, 50)
+
+    # If sell >= buy or gap too small, fix it
+    if sell_threshold >= buy_threshold or (buy_threshold - sell_threshold) < min_gap:
+        # Calculate midpoint and spread from there
+        mid = (buy_threshold + sell_threshold) / 2
+        mid = np.clip(mid, 35, 65)  # Keep midpoint reasonable
+
+        buy_threshold = mid + min_gap / 2
+        sell_threshold = mid - min_gap / 2
+
+        # Re-clip to valid ranges
+        buy_threshold = np.clip(buy_threshold, 50, 80)
+        sell_threshold = np.clip(sell_threshold, 20, 50)
+
+        # Final safety check - if still invalid, use safe defaults
+        if sell_threshold >= buy_threshold:
+            buy_threshold = 65
+            sell_threshold = 35
+
+    return round(buy_threshold), round(sell_threshold)
+
+
 class MarketRegimeDetector:
     """
     Detects market regimes using multiple indicators:
@@ -229,13 +275,20 @@ class MetaLearner:
 
         Returns:
         --------
-        dict : Predicted optimal parameters
+        dict : Predicted optimal parameters (guaranteed buy > sell)
         """
         # Start with regime defaults
         defaults = self.regime_defaults.get(regime, self.regime_defaults[MarketRegimeDetector.REGIME_RANGING])
 
         if not self.is_trained:
-            return defaults.copy()
+            # Validate even defaults
+            buy, sell = validate_thresholds(defaults['buy_threshold'], defaults['sell_threshold'])
+            return {
+                'buy_threshold': buy,
+                'sell_threshold': sell,
+                'exit_buy_offset': defaults['exit_buy_offset'],
+                'exit_sell_offset': defaults['exit_sell_offset']
+            }
 
         try:
             X = np.array([[features.get(col, 0) for col in self.feature_columns]])
@@ -248,26 +301,25 @@ class MetaLearner:
             buy_threshold = 0.7 * buy_pred + 0.3 * defaults['buy_threshold']
             sell_threshold = 0.7 * sell_pred + 0.3 * defaults['sell_threshold']
 
-            # Ensure valid ranges
-            buy_threshold = np.clip(buy_threshold, 50, 80)
-            sell_threshold = np.clip(sell_threshold, 20, 50)
-
-            # Ensure buy > sell with minimum gap
-            if buy_threshold - sell_threshold < 15:
-                mid = (buy_threshold + sell_threshold) / 2
-                buy_threshold = mid + 10
-                sell_threshold = mid - 10
+            # Validate thresholds (ensures buy > sell with minimum gap)
+            buy_threshold, sell_threshold = validate_thresholds(buy_threshold, sell_threshold)
 
             return {
-                'buy_threshold': round(buy_threshold),
-                'sell_threshold': round(sell_threshold),
+                'buy_threshold': buy_threshold,
+                'sell_threshold': sell_threshold,
                 'exit_buy_offset': defaults['exit_buy_offset'],
                 'exit_sell_offset': defaults['exit_sell_offset']
             }
 
         except Exception as e:
             print(f"Error in meta-learner prediction: {e}")
-            return defaults.copy()
+            buy, sell = validate_thresholds(defaults['buy_threshold'], defaults['sell_threshold'])
+            return {
+                'buy_threshold': buy,
+                'sell_threshold': sell,
+                'exit_buy_offset': defaults['exit_buy_offset'],
+                'exit_sell_offset': defaults['exit_sell_offset']
+            }
 
 
 class WalkForwardOptimizer:
@@ -425,10 +477,10 @@ class StrategyEnsemble:
 
         Returns:
         --------
-        dict : Ensemble-weighted parameters
+        dict : Ensemble-weighted parameters (guaranteed buy > sell)
         """
         if not self.strategies:
-            return {'buy_threshold': 60, 'sell_threshold': 40}
+            return {'buy_threshold': 65, 'sell_threshold': 35, 'exit_buy_offset': 5, 'exit_sell_offset': 5}
 
         # Weighted average of thresholds
         buy_threshold = sum(
@@ -440,14 +492,17 @@ class StrategyEnsemble:
             for s, w in zip(self.strategies, self.weights)
         )
 
+        # Validate thresholds (ensures buy > sell with minimum gap)
+        buy_threshold, sell_threshold = validate_thresholds(buy_threshold, sell_threshold)
+
         # Get exit offsets from best performing strategy
         best_idx = np.argmax(self.weights)
         exit_buy_offset = self.strategies[best_idx]['params'].get('exit_buy_offset', 5)
         exit_sell_offset = self.strategies[best_idx]['params'].get('exit_sell_offset', 5)
 
         return {
-            'buy_threshold': round(buy_threshold),
-            'sell_threshold': round(sell_threshold),
+            'buy_threshold': buy_threshold,
+            'sell_threshold': sell_threshold,
             'exit_buy_offset': exit_buy_offset,
             'exit_sell_offset': exit_sell_offset
         }
@@ -754,21 +809,29 @@ class StrategyOptimizer:
 
         Returns:
         --------
-        dict : Optimized parameters
+        dict : Optimized parameters (guaranteed buy > sell)
         """
-        best_params = initial_params.copy()
-        best_sharpe = -np.inf
+        # Validate initial params first
+        buy_center, sell_center = validate_thresholds(
+            initial_params['buy_threshold'],
+            initial_params['sell_threshold']
+        )
 
-        buy_center = initial_params['buy_threshold']
-        sell_center = initial_params['sell_threshold']
+        best_params = {
+            'buy_threshold': buy_center,
+            'sell_threshold': sell_center,
+            'exit_buy_offset': initial_params.get('exit_buy_offset', 5),
+            'exit_sell_offset': initial_params.get('exit_sell_offset', 5)
+        }
+        best_sharpe = -np.inf
 
         for buy_offset in range(-search_range, search_range + 1, step):
             for sell_offset in range(-search_range, search_range + 1, step):
                 buy = buy_center + buy_offset
                 sell = sell_center + sell_offset
 
-                # Validate thresholds
-                if buy <= sell + 10 or buy > 80 or buy < 50 or sell > 50 or sell < 20:
+                # Skip invalid combinations (buy must be > sell + MIN_THRESHOLD_GAP)
+                if buy <= sell + MIN_THRESHOLD_GAP or buy > 80 or buy < 50 or sell > 50 or sell < 20:
                     continue
 
                 exit_buy = sell + initial_params.get('exit_buy_offset', 5)
@@ -784,6 +847,12 @@ class StrategyOptimizer:
                         'exit_buy_offset': initial_params.get('exit_buy_offset', 5),
                         'exit_sell_offset': initial_params.get('exit_sell_offset', 5)
                     }
+
+        # Final validation of best params
+        best_params['buy_threshold'], best_params['sell_threshold'] = validate_thresholds(
+            best_params['buy_threshold'],
+            best_params['sell_threshold']
+        )
 
         return best_params
 
@@ -801,7 +870,8 @@ class StrategyOptimizer:
         for buy, sell, exit_buy_offset, exit_sell_offset in product(
             buy_thresholds, sell_thresholds, exit_buy_offsets, exit_sell_offsets
         ):
-            if buy <= sell:
+            # Skip invalid combinations (buy must be > sell + MIN_THRESHOLD_GAP)
+            if buy <= sell + MIN_THRESHOLD_GAP:
                 continue
 
             exit_buy = sell + exit_buy_offset
@@ -813,7 +883,22 @@ class StrategyOptimizer:
         results = sorted(results, key=lambda x: x['sharpe_ratio'], reverse=True)
         self.results = results
 
-        return results[0] if results else None
+        if results:
+            best = results[0]
+            # Validate the best result
+            best['buy_threshold'], best['sell_threshold'] = validate_thresholds(
+                best['buy_threshold'],
+                best['sell_threshold']
+            )
+            return best
+
+        # Return safe defaults if no valid results
+        return {
+            'buy_threshold': 65,
+            'sell_threshold': 35,
+            'sharpe_ratio': 0,
+            'total_return': 0
+        }
 
     def optimize_all_strategies(self, min_period=0):
         """

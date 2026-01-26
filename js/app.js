@@ -256,6 +256,14 @@ function displayCompositeChart(compositeData, thresholds) {
         compositeChart.destroy();
     }
 
+    const buyThreshold = thresholds.buy_threshold || 60;
+    const sellThreshold = thresholds.sell_threshold || 40;
+    const numPoints = compositeData.dates.length;
+
+    // Create threshold line data (horizontal lines across all dates)
+    const buyThresholdLine = Array(numPoints).fill(buyThreshold);
+    const sellThresholdLine = Array(numPoints).fill(sellThreshold);
+
     compositeChart = new Chart(ctx, {
         type: 'line',
         data: {
@@ -265,7 +273,24 @@ function displayCompositeChart(compositeData, thresholds) {
                 data: compositeData.values,
                 borderColor: 'rgb(147, 51, 234)',
                 backgroundColor: 'rgba(147, 51, 234, 0.1)',
-                tension: 0.1
+                tension: 0.1,
+                borderWidth: 2
+            }, {
+                label: `Buy Threshold (${buyThreshold})`,
+                data: buyThresholdLine,
+                borderColor: 'rgb(34, 197, 94)',
+                borderDash: [8, 4],
+                borderWidth: 2,
+                pointRadius: 0,
+                fill: false
+            }, {
+                label: `Sell Threshold (${sellThreshold})`,
+                data: sellThresholdLine,
+                borderColor: 'rgb(239, 68, 68)',
+                borderDash: [8, 4],
+                borderWidth: 2,
+                pointRadius: 0,
+                fill: false
             }]
         },
         options: {
@@ -274,37 +299,10 @@ function displayCompositeChart(compositeData, thresholds) {
             plugins: {
                 title: {
                     display: true,
-                    text: 'Composite Index (0-100)'
+                    text: 'Composite Index with Buy/Sell Thresholds'
                 },
-                annotation: {
-                    annotations: {
-                        buyLine: {
-                            type: 'line',
-                            yMin: thresholds.buy_threshold,
-                            yMax: thresholds.buy_threshold,
-                            borderColor: 'green',
-                            borderWidth: 2,
-                            borderDash: [6, 6],
-                            label: {
-                                display: true,
-                                content: `Buy (${thresholds.buy_threshold})`,
-                                position: 'end'
-                            }
-                        },
-                        sellLine: {
-                            type: 'line',
-                            yMin: thresholds.sell_threshold,
-                            yMax: thresholds.sell_threshold,
-                            borderColor: 'red',
-                            borderWidth: 2,
-                            borderDash: [6, 6],
-                            label: {
-                                display: true,
-                                content: `Sell (${thresholds.sell_threshold})`,
-                                position: 'end'
-                            }
-                        }
-                    }
+                legend: {
+                    display: true
                 }
             },
             scales: {
