@@ -120,9 +120,28 @@ function displayMetrics(metrics, symbol) {
 
     if (metrics.strategy_metrics) {
         const sm = metrics.strategy_metrics;
-        metricsText += `\n${'='.repeat(30)}\n`;
-        metricsText += `TRADING STRATEGY (${sm.period}):\n`;
-        metricsText += `${'='.repeat(30)}\n`;
+        metricsText += `\n${'='.repeat(40)}\n`;
+        metricsText += `SMART TRADING STRATEGY (${sm.period}):\n`;
+        metricsText += `${'='.repeat(40)}\n`;
+
+        // Display optimization info if available
+        if (sm.optimization_info) {
+            const oi = sm.optimization_info;
+            metricsText += `\nOptimization Method: ${formatOptMethod(oi.method)}\n`;
+            metricsText += `Market Regime: ${formatRegime(oi.regime)}\n`;
+
+            // Display ensemble weights
+            if (oi.ensemble_weights && Object.keys(oi.ensemble_weights).length > 0) {
+                metricsText += `\nEnsemble Strategy Weights:\n`;
+                for (const [strategy, weight] of Object.entries(oi.ensemble_weights)) {
+                    const pct = (weight * 100).toFixed(1);
+                    const bar = getProgressBar(weight);
+                    metricsText += `  ${formatStrategyName(strategy)}: ${bar} ${pct}%\n`;
+                }
+            }
+            metricsText += `\n`;
+        }
+
         metricsText += `ALPHA: ${sm.alpha.toFixed(2)}%\n`;
         metricsText += `BETA: ${sm.beta.toFixed(2)}\n\n`;
         metricsText += `Strategy Return: ${sm.strategy_return.toFixed(2)}%\n`;
@@ -130,9 +149,50 @@ function displayMetrics(metrics, symbol) {
         metricsText += `Max Drawdown: ${sm.strategy_max_dd.toFixed(2)}%\n`;
         metricsText += `Sharpe Ratio: ${sm.strategy_sharpe.toFixed(2)}\n`;
         metricsText += `Number of Trades: ${sm.trades}\n`;
+
+        // Show additional metrics if available
+        if (sm.optimization_info) {
+            const oi = sm.optimization_info;
+            if (oi.win_rate) metricsText += `Win Rate: ${oi.win_rate.toFixed(1)}%\n`;
+            if (oi.profit_factor) metricsText += `Profit Factor: ${oi.profit_factor.toFixed(2)}\n`;
+        }
     }
 
     metricsDiv.textContent = metricsText;
+}
+
+function formatOptMethod(method) {
+    const methods = {
+        'meta_learning_ensemble': 'Meta-Learning Ensemble',
+        'grid_search': 'Grid Search',
+        'walk_forward': 'Walk-Forward'
+    };
+    return methods[method] || method;
+}
+
+function formatRegime(regime) {
+    const regimes = {
+        'trending_up': 'Trending UP',
+        'trending_down': 'Trending DOWN',
+        'ranging': 'Ranging/Sideways',
+        'high_volatility': 'High Volatility'
+    };
+    return regimes[regime] || regime;
+}
+
+function formatStrategyName(name) {
+    const names = {
+        'regime': 'Regime-Based   ',
+        'meta': 'Meta-Learner   ',
+        'walk_forward': 'Walk-Forward   '
+    };
+    return names[name] || name.padEnd(15);
+}
+
+function getProgressBar(value) {
+    const filled = Math.round(value * 10);
+    const empty = 10 - filled;
+    return '[' + '#'.repeat(filled) + '-'.repeat(empty) + ']';
 }
 
 function displayPriceChart(priceData, symbol) {
@@ -196,6 +256,14 @@ function displayCompositeChart(compositeData, thresholds) {
         compositeChart.destroy();
     }
 
+    const buyThreshold = thresholds.buy_threshold || 60;
+    const sellThreshold = thresholds.sell_threshold || 40;
+    const numPoints = compositeData.dates.length;
+
+    // Create threshold line data (horizontal lines across all dates)
+    const buyThresholdLine = Array(numPoints).fill(buyThreshold);
+    const sellThresholdLine = Array(numPoints).fill(sellThreshold);
+
     compositeChart = new Chart(ctx, {
         type: 'line',
         data: {
@@ -205,7 +273,24 @@ function displayCompositeChart(compositeData, thresholds) {
                 data: compositeData.values,
                 borderColor: 'rgb(147, 51, 234)',
                 backgroundColor: 'rgba(147, 51, 234, 0.1)',
-                tension: 0.1
+                tension: 0.1,
+                borderWidth: 2
+            }, {
+                label: `Buy Threshold (${buyThreshold})`,
+                data: buyThresholdLine,
+                borderColor: 'rgb(34, 197, 94)',
+                borderDash: [8, 4],
+                borderWidth: 2,
+                pointRadius: 0,
+                fill: false
+            }, {
+                label: `Sell Threshold (${sellThreshold})`,
+                data: sellThresholdLine,
+                borderColor: 'rgb(239, 68, 68)',
+                borderDash: [8, 4],
+                borderWidth: 2,
+                pointRadius: 0,
+                fill: false
             }]
         },
         options: {
@@ -214,37 +299,10 @@ function displayCompositeChart(compositeData, thresholds) {
             plugins: {
                 title: {
                     display: true,
-                    text: 'Composite Index (0-100)'
+                    text: 'Composite Index with Buy/Sell Thresholds'
                 },
-                annotation: {
-                    annotations: {
-                        buyLine: {
-                            type: 'line',
-                            yMin: thresholds.buy_threshold,
-                            yMax: thresholds.buy_threshold,
-                            borderColor: 'green',
-                            borderWidth: 2,
-                            borderDash: [6, 6],
-                            label: {
-                                display: true,
-                                content: `Buy (${thresholds.buy_threshold})`,
-                                position: 'end'
-                            }
-                        },
-                        sellLine: {
-                            type: 'line',
-                            yMin: thresholds.sell_threshold,
-                            yMax: thresholds.sell_threshold,
-                            borderColor: 'red',
-                            borderWidth: 2,
-                            borderDash: [6, 6],
-                            label: {
-                                display: true,
-                                content: `Sell (${thresholds.sell_threshold})`,
-                                position: 'end'
-                            }
-                        }
-                    }
+                legend: {
+                    display: true
                 }
             },
             scales: {
