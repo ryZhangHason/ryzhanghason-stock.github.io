@@ -175,17 +175,52 @@ try:
 except Exception as e:
     raise Exception(f"Failed to calculate composite index: {str(e)}")
 
-# Step 7: Optimize strategy if requested
+# Step 7: Optimize strategy if requested using smart meta-learning optimizer
 strategy_results = None
+optimization_info = None
 if optimize_strategy:
-    print("Step 7: Optimizing trading strategy...")
+    print("Step 7: Running smart meta-learning optimization...")
     try:
         optimizer = StrategyOptimizer(df_features)
-        strategy_results = optimizer.optimize_all_strategies()
-        print(f"Strategy optimization complete")
+        optimal_thresholds = optimizer.optimize_thresholds(min_period=120)
+
+        if optimal_thresholds:
+            df_with_strategy = optimizer.apply_optimal_strategy(optimal_thresholds)
+
+            # Extract optimization info
+            optimization_info = {
+                'method': optimal_thresholds.get('optimization_method', 'grid_search'),
+                'regime': optimal_thresholds.get('regime', 'unknown'),
+                'ensemble_weights': optimal_thresholds.get('ensemble_weights', {}),
+                'buy_threshold': optimal_thresholds.get('buy_threshold', 60),
+                'sell_threshold': optimal_thresholds.get('sell_threshold', 40),
+                'sharpe_ratio': optimal_thresholds.get('sharpe_ratio', 0),
+                'total_return': optimal_thresholds.get('total_return', 0),
+                'win_rate': optimal_thresholds.get('win_rate', 0),
+                'num_trades': optimal_thresholds.get('num_trades', 0),
+                'max_drawdown': optimal_thresholds.get('max_drawdown', 0)
+            }
+
+            # Calculate strategy performance for chart
+            last_120 = df_with_strategy.tail(120)
+            if 'Strategy_Value' in last_120.columns and 'BuyHold_Value' in last_120.columns:
+                initial_st = last_120['Strategy_Value'].iloc[0]
+                initial_bh = last_120['BuyHold_Value'].iloc[0]
+
+                strategy_results = {
+                    'dates': [d.strftime('%Y-%m-%d') if hasattr(d, 'strftime') else str(d) for d in last_120['Date']],
+                    'strategy': [float((x / initial_st - 1) * 100) for x in last_120['Strategy_Value']],
+                    'buyhold': [float((x / initial_bh - 1) * 100) for x in last_120['BuyHold_Value']],
+                    'optimization_info': optimization_info
+                }
+
+            print(f"Smart optimization complete - Regime: {optimization_info['regime']}, Buy: {optimization_info['buy_threshold']}, Sell: {optimization_info['sell_threshold']}")
     except Exception as e:
-        print(f"Warning: Strategy optimization failed: {str(e)}")
+        print(f"Warning: Smart strategy optimization failed: {str(e)}")
+        import traceback
+        traceback.print_exc()
         strategy_results = None
+        optimization_info = None
 
 # Prepare results
 latest_data = df_features.iloc[-1]
@@ -228,18 +263,14 @@ composite_data = {
     'close': chart_data['close']
 }
 
-# Strategy chart data
+# Strategy chart data (now using smart optimizer output)
 strategy_chart = None
 if strategy_results:
-    best_strategy = max(strategy_results, key=lambda x: x['total_return'])
     strategy_chart = {
-        'dates': [d.strftime('%Y-%m-%d') if hasattr(d, 'strftime') else str(d) for d in best_strategy['equity_curve']['Date']],
-        'equity': [float(x) for x in best_strategy['equity_curve']['Portfolio_Value']],
-        'strategy_name': best_strategy['strategy_name'],
-        'total_return': float(best_strategy['total_return']),
-        'sharpe_ratio': float(best_strategy['sharpe_ratio']),
-        'max_drawdown': float(best_strategy['max_drawdown']),
-        'win_rate': float(best_strategy['win_rate'])
+        'dates': strategy_results['dates'],
+        'strategy': strategy_results['strategy'],
+        'buyhold': strategy_results['buyhold'],
+        'optimization_info': strategy_results.get('optimization_info', {})
     }
 
 output = {
@@ -500,18 +531,33 @@ function displayStrategyChart(strategyData) {
         strategyChart.destroy();
     }
 
+    // Get optimization info for title
+    const oi = strategyData.optimization_info || {};
+    const regime = formatRegime(oi.regime || 'unknown');
+    const sharpe = (oi.sharpe_ratio || 0).toFixed(2);
+    const winRate = (oi.win_rate || 0).toFixed(1);
+    const method = formatOptMethod(oi.method || 'grid_search');
+
     strategyChart = new Chart(ctx, {
         type: 'line',
         data: {
             labels: strategyData.dates,
             datasets: [{
-                label: 'Portfolio Value',
-                data: strategyData.equity,
+                label: 'Smart Strategy',
+                data: strategyData.strategy,
                 borderColor: 'rgb(34, 197, 94)',
                 backgroundColor: 'rgba(34, 197, 94, 0.1)',
                 tension: 0.2,
                 borderWidth: 2,
                 fill: true
+            }, {
+                label: 'Buy & Hold',
+                data: strategyData.buyhold,
+                borderColor: 'rgb(54, 162, 235)',
+                backgroundColor: 'rgba(54, 162, 235, 0.1)',
+                tension: 0.2,
+                borderWidth: 2,
+                fill: false
             }]
         },
         options: {
@@ -519,20 +565,43 @@ function displayStrategyChart(strategyData) {
             plugins: {
                 title: {
                     display: true,
-                    text: `${strategyData.strategy_name} | Return: ${(strategyData.total_return * 100).toFixed(2)}% | Sharpe: ${strategyData.sharpe_ratio.toFixed(2)} | Win Rate: ${(strategyData.win_rate * 100).toFixed(1)}%`,
+                    text: `${method} | Regime: ${regime} | Sharpe: ${sharpe} | Win Rate: ${winRate}%`,
                     font: { size: 14 }
+                },
+                subtitle: {
+                    display: true,
+                    text: `Thresholds: Buy >= ${oi.buy_threshold || 60}, Sell <= ${oi.sell_threshold || 40}`,
+                    font: { size: 12 }
                 }
             },
             scales: {
                 y: {
-                    beginAtZero: false,
                     ticks: {
-                        callback: value => '$' + value.toFixed(2)
+                        callback: value => value.toFixed(1) + '%'
                     }
                 }
             }
         }
     });
+}
+
+function formatOptMethod(method) {
+    const methods = {
+        'meta_learning_ensemble': 'Meta-Learning Ensemble',
+        'grid_search': 'Grid Search',
+        'walk_forward': 'Walk-Forward'
+    };
+    return methods[method] || method;
+}
+
+function formatRegime(regime) {
+    const regimes = {
+        'trending_up': 'Trending UP',
+        'trending_down': 'Trending DOWN',
+        'ranging': 'Ranging',
+        'high_volatility': 'High Volatility'
+    };
+    return regimes[regime] || regime;
 }
 
 function showError(message) {

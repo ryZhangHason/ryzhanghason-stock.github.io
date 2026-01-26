@@ -120,9 +120,28 @@ function displayMetrics(metrics, symbol) {
 
     if (metrics.strategy_metrics) {
         const sm = metrics.strategy_metrics;
-        metricsText += `\n${'='.repeat(30)}\n`;
-        metricsText += `TRADING STRATEGY (${sm.period}):\n`;
-        metricsText += `${'='.repeat(30)}\n`;
+        metricsText += `\n${'='.repeat(40)}\n`;
+        metricsText += `SMART TRADING STRATEGY (${sm.period}):\n`;
+        metricsText += `${'='.repeat(40)}\n`;
+
+        // Display optimization info if available
+        if (sm.optimization_info) {
+            const oi = sm.optimization_info;
+            metricsText += `\nOptimization Method: ${formatOptMethod(oi.method)}\n`;
+            metricsText += `Market Regime: ${formatRegime(oi.regime)}\n`;
+
+            // Display ensemble weights
+            if (oi.ensemble_weights && Object.keys(oi.ensemble_weights).length > 0) {
+                metricsText += `\nEnsemble Strategy Weights:\n`;
+                for (const [strategy, weight] of Object.entries(oi.ensemble_weights)) {
+                    const pct = (weight * 100).toFixed(1);
+                    const bar = getProgressBar(weight);
+                    metricsText += `  ${formatStrategyName(strategy)}: ${bar} ${pct}%\n`;
+                }
+            }
+            metricsText += `\n`;
+        }
+
         metricsText += `ALPHA: ${sm.alpha.toFixed(2)}%\n`;
         metricsText += `BETA: ${sm.beta.toFixed(2)}\n\n`;
         metricsText += `Strategy Return: ${sm.strategy_return.toFixed(2)}%\n`;
@@ -130,9 +149,50 @@ function displayMetrics(metrics, symbol) {
         metricsText += `Max Drawdown: ${sm.strategy_max_dd.toFixed(2)}%\n`;
         metricsText += `Sharpe Ratio: ${sm.strategy_sharpe.toFixed(2)}\n`;
         metricsText += `Number of Trades: ${sm.trades}\n`;
+
+        // Show additional metrics if available
+        if (sm.optimization_info) {
+            const oi = sm.optimization_info;
+            if (oi.win_rate) metricsText += `Win Rate: ${oi.win_rate.toFixed(1)}%\n`;
+            if (oi.profit_factor) metricsText += `Profit Factor: ${oi.profit_factor.toFixed(2)}\n`;
+        }
     }
 
     metricsDiv.textContent = metricsText;
+}
+
+function formatOptMethod(method) {
+    const methods = {
+        'meta_learning_ensemble': 'Meta-Learning Ensemble',
+        'grid_search': 'Grid Search',
+        'walk_forward': 'Walk-Forward'
+    };
+    return methods[method] || method;
+}
+
+function formatRegime(regime) {
+    const regimes = {
+        'trending_up': 'Trending UP',
+        'trending_down': 'Trending DOWN',
+        'ranging': 'Ranging/Sideways',
+        'high_volatility': 'High Volatility'
+    };
+    return regimes[regime] || regime;
+}
+
+function formatStrategyName(name) {
+    const names = {
+        'regime': 'Regime-Based   ',
+        'meta': 'Meta-Learner   ',
+        'walk_forward': 'Walk-Forward   '
+    };
+    return names[name] || name.padEnd(15);
+}
+
+function getProgressBar(value) {
+    const filled = Math.round(value * 10);
+    const empty = 10 - filled;
+    return '[' + '#'.repeat(filled) + '-'.repeat(empty) + ']';
 }
 
 function displayPriceChart(priceData, symbol) {

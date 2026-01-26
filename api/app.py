@@ -59,18 +59,29 @@ def predict():
         composite_index = predictor.calculate_composite_index(df_features_copy)
         df_features_copy['Composite_Index'] = composite_index
 
-        # Optimize strategy
+        # Optimize strategy using smart meta-learning optimizer
         strategy_thresholds = {'buy_threshold': 60, 'sell_threshold': 40}
         strategy_metrics = None
+        optimization_info = None
 
         if optimize:
-            print(f"Optimizing strategy...")
+            print(f"Running smart meta-learning optimization...")
             optimizer = StrategyOptimizer(df_features_copy)
             optimal_thresholds = optimizer.optimize_thresholds(min_period=120)
 
             if optimal_thresholds:
                 df_features_copy = optimizer.apply_optimal_strategy(optimal_thresholds)
                 strategy_thresholds = optimal_thresholds
+
+                # Extract optimization info for frontend display
+                optimization_info = {
+                    'method': optimal_thresholds.get('optimization_method', 'grid_search'),
+                    'regime': optimal_thresholds.get('regime', 'unknown'),
+                    'ensemble_weights': optimal_thresholds.get('ensemble_weights', {}),
+                    'win_rate': optimal_thresholds.get('win_rate', 0),
+                    'num_trades': optimal_thresholds.get('num_trades', 0),
+                    'profit_factor': optimal_thresholds.get('profit_factor', 0)
+                }
 
                 # Calculate strategy metrics
                 last_120 = df_features_copy.iloc[-120:]
@@ -82,7 +93,8 @@ def predict():
                     'strategy_sharpe': optimal_thresholds.get('sharpe_ratio', 0),
                     'alpha': optimal_thresholds.get('total_return', 0),
                     'beta': 1.0,
-                    'trades': int(last_120['Position'].diff().fillna(0).abs().sum() / 2)
+                    'trades': int(last_120['Position'].diff().fillna(0).abs().sum() / 2),
+                    'optimization_info': optimization_info
                 }
 
         df_features = df_features_copy
