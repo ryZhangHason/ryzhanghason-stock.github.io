@@ -415,6 +415,282 @@ class AlphaFactorCalculator:
         return signals
 
 
+class TraderProfileGenerator:
+    """
+    Generates 3 different trader profiles with different risk appetites:
+    - Aggressive: Lower thresholds, more frequent trading, higher risk tolerance
+    - Medium: Balanced approach with moderate thresholds
+    - Conservative: Higher thresholds, fewer trades, capital preservation focus
+    """
+
+    AGGRESSIVE = 'aggressive'
+    MEDIUM = 'medium'
+    CONSERVATIVE = 'conservative'
+
+    def __init__(self, base_thresholds=None):
+        """
+        Initialize with base thresholds from optimization.
+
+        Parameters:
+        -----------
+        base_thresholds : dict
+            Base thresholds from optimization (buy_threshold, sell_threshold)
+        """
+        self.base_thresholds = base_thresholds or {'buy_threshold': 60, 'sell_threshold': 40}
+
+    def generate_all_profiles(self, df, alpha_factors=None):
+        """
+        Generate all 3 trader profiles with their behavioral analysis.
+
+        Parameters:
+        -----------
+        df : pandas.DataFrame
+            DataFrame with price data and indicators
+        alpha_factors : dict, optional
+            Current alpha factor values
+
+        Returns:
+        --------
+        dict : All 3 trader profiles with analysis
+        """
+        profiles = {}
+
+        for profile_type in [self.AGGRESSIVE, self.MEDIUM, self.CONSERVATIVE]:
+            thresholds = self._get_profile_thresholds(profile_type)
+            df_with_positions = self._apply_strategy(df.copy(), thresholds)
+            analysis = self._analyze_profile(df_with_positions, thresholds, profile_type, alpha_factors)
+            profiles[profile_type] = {
+                'thresholds': thresholds,
+                'analysis': analysis,
+                'metrics': self._calculate_profile_metrics(df_with_positions, thresholds)
+            }
+
+        return profiles
+
+    def _get_profile_thresholds(self, profile_type):
+        """Get thresholds for a specific profile type."""
+        base_buy = self.base_thresholds.get('buy_threshold', 60)
+        base_sell = self.base_thresholds.get('sell_threshold', 40)
+
+        if profile_type == self.AGGRESSIVE:
+            # Lower thresholds = more trades, earlier entry
+            buy = max(50, base_buy - 10)
+            sell = min(50, base_sell + 5)
+            return {
+                'buy_threshold': buy,
+                'sell_threshold': sell,
+                'exit_buy_offset': 3,
+                'exit_sell_offset': 3,
+                'description': 'Early entry, tight stops, high frequency'
+            }
+        elif profile_type == self.CONSERVATIVE:
+            # Higher thresholds = fewer trades, stronger signals needed
+            buy = min(80, base_buy + 10)
+            sell = max(20, base_sell - 10)
+            return {
+                'buy_threshold': buy,
+                'sell_threshold': sell,
+                'exit_buy_offset': 10,
+                'exit_sell_offset': 10,
+                'description': 'Strong signals only, wide stops, capital preservation'
+            }
+        else:  # MEDIUM
+            return {
+                'buy_threshold': base_buy,
+                'sell_threshold': base_sell,
+                'exit_buy_offset': 5,
+                'exit_sell_offset': 5,
+                'description': 'Balanced approach, moderate frequency'
+            }
+
+    def _apply_strategy(self, df, thresholds):
+        """Apply strategy with given thresholds to generate positions."""
+        if 'Composite_Index' not in df.columns:
+            df['Position'] = 0
+            return df
+
+        buy_th = thresholds['buy_threshold']
+        sell_th = thresholds['sell_threshold']
+        exit_buy = sell_th + thresholds.get('exit_buy_offset', 5)
+        exit_sell = buy_th - thresholds.get('exit_sell_offset', 5)
+
+        df['Position'] = 0
+        current_position = 0
+
+        for i in range(1, len(df)):
+            idx = df.index[i]
+            prev_idx = df.index[i-1]
+            composite_value = df.at[idx, 'Composite_Index']
+            current_position = df.at[prev_idx, 'Position']
+
+            if current_position == 0:
+                if composite_value >= buy_th:
+                    current_position = 1
+                elif composite_value <= sell_th:
+                    current_position = -1
+            elif current_position == 1:
+                if composite_value <= exit_buy:
+                    current_position = 0
+            elif current_position == -1:
+                if composite_value >= exit_sell:
+                    current_position = 0
+
+            df.at[idx, 'Position'] = current_position
+
+        # Calculate returns
+        df['Daily_Return'] = df['Close'].pct_change()
+        df['Strategy_Return'] = df['Position'] * df['Daily_Return'].shift(-1)
+
+        return df
+
+    def _analyze_profile(self, df, thresholds, profile_type, alpha_factors):
+        """Generate behavioral analysis for a profile."""
+        positions = df['Position'] if 'Position' in df.columns else pd.Series([0])
+
+        # Position breakdown
+        long_pct = (positions == 1).mean() * 100
+        short_pct = (positions == -1).mean() * 100
+        cash_pct = (positions == 0).mean() * 100
+
+        # Profile-specific descriptions
+        profile_descriptions = {
+            self.AGGRESSIVE: {
+                'trading_style': 'High-frequency momentum trader',
+                'entry_behavior': 'Enters positions early on emerging signals',
+                'exit_behavior': 'Uses tight stops, quick to cut losses',
+                'risk_approach': 'Accepts higher volatility for larger returns',
+                'best_market': 'Strong trending markets with clear direction',
+                'weakness': 'May get whipsawed in choppy/ranging markets',
+                'indicator_focus': 'RSI momentum, MACD crossovers, volume spikes'
+            },
+            self.MEDIUM: {
+                'trading_style': 'Balanced swing trader',
+                'entry_behavior': 'Waits for confirmed signals before entry',
+                'exit_behavior': 'Moderate stops, allows for normal pullbacks',
+                'risk_approach': 'Balances risk and reward equally',
+                'best_market': 'Most market conditions with some trend',
+                'weakness': 'May miss early moves or hold through reversals',
+                'indicator_focus': 'Composite index, trend confirmation, MA alignment'
+            },
+            self.CONSERVATIVE: {
+                'trading_style': 'Position trader focused on capital preservation',
+                'entry_behavior': 'Only enters on very strong, confirmed signals',
+                'exit_behavior': 'Wide stops, holds through volatility',
+                'risk_approach': 'Prioritizes capital preservation over gains',
+                'best_market': 'Strong trending markets with clear momentum',
+                'weakness': 'Misses many opportunities, slow to react',
+                'indicator_focus': 'ADX trend strength, multi-MA alignment, volume confirmation'
+            }
+        }
+
+        description = profile_descriptions.get(profile_type, profile_descriptions[self.MEDIUM])
+
+        # Generate alpha usage description based on profile
+        alpha_usage = self._describe_alpha_usage(profile_type, alpha_factors)
+
+        return {
+            'profile_type': profile_type,
+            'profile_name': profile_type.replace('_', ' ').title(),
+            'description': description,
+            'position_breakdown': {
+                'long_pct': round(long_pct, 1),
+                'short_pct': round(short_pct, 1),
+                'cash_pct': round(cash_pct, 1)
+            },
+            'threshold_interpretation': self._interpret_thresholds(thresholds, profile_type),
+            'alpha_usage': alpha_usage,
+            'risk_rating': {'aggressive': 'High', 'medium': 'Medium', 'conservative': 'Low'}.get(profile_type, 'Medium'),
+            'trade_frequency': {'aggressive': 'High', 'medium': 'Medium', 'conservative': 'Low'}.get(profile_type, 'Medium')
+        }
+
+    def _describe_alpha_usage(self, profile_type, alpha_factors):
+        """Describe how this profile uses alpha factors."""
+        if not alpha_factors:
+            return {'primary': [], 'secondary': [], 'description': 'No alpha factors available'}
+
+        if profile_type == self.AGGRESSIVE:
+            return {
+                'primary': ['momentum_5d', 'momentum_acceleration', 'volume_ratio', 'macd_momentum'],
+                'secondary': ['rsi_extreme', 'stoch_crossover'],
+                'description': 'Focuses on short-term momentum and volume spikes for quick entries. Uses RSI and Stochastic for timing.'
+            }
+        elif profile_type == self.CONSERVATIVE:
+            return {
+                'primary': ['momentum_20d', 'adx_strength', 'ma_alignment', 'trend_consistency_20d'],
+                'secondary': ['vol_ratio', 'zscore_ma50'],
+                'description': 'Relies on longer-term trend indicators and multi-timeframe confirmation. Avoids trades in high volatility.'
+            }
+        else:  # MEDIUM
+            return {
+                'primary': ['momentum_20d', 'zscore_ma20', 'composite_position', 'volume_price_trend'],
+                'secondary': ['vol_ratio', 'bb_position', 'macd_signal'],
+                'description': 'Balanced use of momentum and mean-reversion signals. Confirms entries with volume analysis.'
+            }
+
+    def _interpret_thresholds(self, thresholds, profile_type):
+        """Interpret what the thresholds mean for trading behavior."""
+        buy = thresholds['buy_threshold']
+        sell = thresholds['sell_threshold']
+        spread = buy - sell
+
+        interpretations = {
+            self.AGGRESSIVE: f'Buy at {buy} (easier entry), Sell at {sell}. Narrow spread ({spread}pts) = more active trading.',
+            self.MEDIUM: f'Buy at {buy}, Sell at {sell}. Moderate spread ({spread}pts) balances opportunity and risk.',
+            self.CONSERVATIVE: f'Buy at {buy} (strong signal needed), Sell at {sell}. Wide spread ({spread}pts) = fewer, higher-quality trades.'
+        }
+
+        return interpretations.get(profile_type, f'Buy >= {buy}, Sell <= {sell}, Spread: {spread}pts')
+
+    def _calculate_profile_metrics(self, df, thresholds):
+        """Calculate performance metrics for this profile."""
+        if 'Strategy_Return' not in df.columns or df['Strategy_Return'].isna().all():
+            return {
+                'total_return': 0,
+                'sharpe_ratio': 0,
+                'max_drawdown': 0,
+                'num_trades': 0,
+                'win_rate': 0
+            }
+
+        returns = df['Strategy_Return'].dropna()
+
+        if len(returns) < 2:
+            return {
+                'total_return': 0,
+                'sharpe_ratio': 0,
+                'max_drawdown': 0,
+                'num_trades': 0,
+                'win_rate': 0
+            }
+
+        # Calculate metrics
+        total_return = (1 + returns).prod() - 1
+        sharpe = np.sqrt(252) * returns.mean() / returns.std() if returns.std() > 0 else 0
+
+        # Drawdown
+        cumulative = (1 + returns).cumprod()
+        peak = cumulative.cummax()
+        drawdown = (cumulative - peak) / peak
+        max_dd = drawdown.min()
+
+        # Trade count
+        position_changes = df['Position'].diff().fillna(0).abs()
+        num_trades = int(position_changes.sum() / 2)
+
+        # Win rate (simplified)
+        winning_days = (returns > 0).sum()
+        total_days = len(returns[returns != 0])
+        win_rate = winning_days / total_days * 100 if total_days > 0 else 0
+
+        return {
+            'total_return': round(total_return * 100, 2),
+            'sharpe_ratio': round(sharpe, 2),
+            'max_drawdown': round(max_dd * 100, 2),
+            'num_trades': num_trades,
+            'win_rate': round(win_rate, 1)
+        }
+
+
 class TradingBehaviorAnalyzer:
     """
     Analyzes the trading behavior of the optimized strategy.
@@ -1348,11 +1624,13 @@ class StrategyOptimizer:
         self.meta_learner = MetaLearner()
         self.alpha_calculator = AlphaFactorCalculator()
         self.behavior_analyzer = TradingBehaviorAnalyzer()
+        self.profile_generator = None  # Initialized after optimization
         self.walk_forward = WalkForwardOptimizer(train_window=60, test_window=20, n_splits=5)
         self.ensemble = StrategyEnsemble()
         self.optimization_history = []
         self.current_alphas = {}
         self.behavior_analysis = {}
+        self.trader_profiles = {}
 
     def calculate_returns(self, buy_threshold, sell_threshold, exit_buy_threshold=None,
                           exit_sell_threshold=None, df=None):
@@ -1589,6 +1867,11 @@ class StrategyOptimizer:
             }
 
             print(f"Optimization complete: buy={best_params['buy_threshold']}, sell={best_params['sell_threshold']}, sharpe={final_result['sharpe_ratio']:.2f}")
+
+            # Generate 3 trader profiles
+            self.profile_generator = TraderProfileGenerator(best_params)
+            self.trader_profiles = self.profile_generator.generate_all_profiles(df, self.current_alphas)
+            print(f"Generated 3 trader profiles: aggressive, medium, conservative")
 
             return result
 
@@ -1992,3 +2275,28 @@ class StrategyOptimizer:
             return "Weak trend / ranging market"
         else:
             return "Transitional trend state"
+
+    def get_trader_profiles(self):
+        """
+        Get the 3 trader profiles (aggressive, medium, conservative) with their analysis.
+
+        Returns:
+        --------
+        dict : Dictionary containing all 3 trader profiles with metrics and analysis
+        """
+        if not self.trader_profiles:
+            # Generate profiles if not already done
+            if self.results and len(self.results) > 0:
+                base_thresholds = {
+                    'buy_threshold': self.results[0].get('buy_threshold', 60),
+                    'sell_threshold': self.results[0].get('sell_threshold', 40)
+                }
+            else:
+                base_thresholds = {'buy_threshold': 60, 'sell_threshold': 40}
+
+            self.profile_generator = TraderProfileGenerator(base_thresholds)
+            self.trader_profiles = self.profile_generator.generate_all_profiles(
+                self.df, self.current_alphas
+            )
+
+        return self.trader_profiles
