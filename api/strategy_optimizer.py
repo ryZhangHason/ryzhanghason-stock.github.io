@@ -4,12 +4,631 @@ from itertools import product
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import TimeSeriesSplit
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.gaussian_process.kernels import Matern, WhiteKernel, ConstantKernel
+from scipy.stats import norm
+from scipy.optimize import minimize
 import warnings
 warnings.filterwarnings('ignore')
 
 
 # Minimum gap between buy and sell thresholds
 MIN_THRESHOLD_GAP = 15
+
+
+class BayesianThresholdOptimizer:
+    """
+    Bayesian Optimization using Gaussian Process for efficient threshold search.
+
+    Much more efficient than grid search - finds optimal thresholds in ~15-20 evaluations
+    instead of 100+ grid search evaluations.
+
+    Uses Expected Improvement (EI) acquisition function to balance exploration vs exploitation.
+    """
+
+    def __init__(self, buy_bounds=(50, 80), sell_bounds=(20, 50), n_initial=5, n_iterations=15):
+        """
+        Initialize Bayesian optimizer.
+
+        Parameters:
+        -----------
+        buy_bounds : tuple
+            (min, max) for buy threshold
+        sell_bounds : tuple
+            (min, max) for sell threshold
+        n_initial : int
+            Number of random initial points
+        n_iterations : int
+            Number of optimization iterations after initial sampling
+        """
+        self.buy_bounds = buy_bounds
+        self.sell_bounds = sell_bounds
+        self.n_initial = n_initial
+        self.n_iterations = n_iterations
+
+        # Gaussian Process with Matern kernel (good for noisy objectives)
+        kernel = ConstantKernel(1.0) * Matern(length_scale=[10, 10], nu=2.5) + WhiteKernel(noise_level=0.1)
+        self.gp = GaussianProcessRegressor(
+            kernel=kernel,
+            n_restarts_optimizer=5,
+            random_state=42,
+            normalize_y=True
+        )
+
+        # History of evaluations
+        self.X_observed = []
+        self.y_observed = []
+        self.best_params = None
+        self.best_score = -np.inf
+
+    def _expected_improvement(self, X, xi=0.01):
+        """
+        Calculate Expected Improvement acquisition function.
+
+        EI balances exploration (high uncertainty) vs exploitation (high predicted value).
+
+        Parameters:
+        -----------
+        X : array
+            Points to evaluate
+        xi : float
+            Exploration-exploitation trade-off parameter
+        """
+        X = np.atleast_2d(X)
+
+        mu, sigma = self.gp.predict(X, return_std=True)
+
+        # Handle zero sigma
+        sigma = np.maximum(sigma, 1e-8)
+
+        # Calculate improvement
+        imp = mu - self.best_score - xi
+        Z = imp / sigma
+        ei = imp * norm.cdf(Z) + sigma * norm.pdf(Z)
+
+        return ei
+
+    def _acquisition_function(self, x):
+        """Negative EI for minimization."""
+        # Ensure valid thresholds
+        buy, sell = x[0], x[1]
+
+        # Penalize invalid configurations
+        if buy <= sell + MIN_THRESHOLD_GAP:
+            return 1e6  # Large penalty
+
+        return -self._expected_improvement(x.reshape(1, -1))[0]
+
+    def _generate_initial_points(self):
+        """Generate initial random points with Latin Hypercube-like sampling."""
+        points = []
+
+        # Add corner points
+        points.append([self.buy_bounds[0], self.sell_bounds[0]])  # Low buy, low sell
+        points.append([self.buy_bounds[1], self.sell_bounds[1]])  # High buy, high sell
+        points.append([65, 35])  # Center point
+
+        # Add random points
+        while len(points) < self.n_initial:
+            buy = np.random.uniform(*self.buy_bounds)
+            sell = np.random.uniform(*self.sell_bounds)
+
+            # Only keep valid configurations
+            if buy > sell + MIN_THRESHOLD_GAP:
+                points.append([buy, sell])
+
+        return np.array(points)
+
+    def optimize(self, objective_function, verbose=True):
+        """
+        Run Bayesian optimization to find optimal thresholds.
+
+        Parameters:
+        -----------
+        objective_function : callable
+            Function that takes (buy_threshold, sell_threshold) and returns Sharpe ratio
+        verbose : bool
+            Print progress
+
+        Returns:
+        --------
+        dict : Optimal thresholds and performance metrics
+        """
+        if verbose:
+            print("Starting Bayesian Optimization with Gaussian Process...")
+
+        # Phase 1: Initial random sampling
+        initial_points = self._generate_initial_points()
+
+        for i, point in enumerate(initial_points):
+            buy, sell = validate_thresholds(point[0], point[1])
+            score = objective_function(buy, sell)
+
+            self.X_observed.append([buy, sell])
+            self.y_observed.append(score)
+
+            if score > self.best_score:
+                self.best_score = score
+                self.best_params = {'buy_threshold': buy, 'sell_threshold': sell}
+
+            if verbose:
+                print(f"  Initial {i+1}/{self.n_initial}: Buy={buy}, Sell={sell}, Sharpe={score:.3f}")
+
+        # Fit GP on initial observations
+        X = np.array(self.X_observed)
+        y = np.array(self.y_observed)
+        self.gp.fit(X, y)
+
+        # Phase 2: Bayesian optimization iterations
+        for i in range(self.n_iterations):
+            # Find next point by maximizing acquisition function
+            best_acquisition = -np.inf
+            best_next_point = None
+
+            # Multi-start optimization of acquisition function
+            for _ in range(20):
+                x0 = [
+                    np.random.uniform(*self.buy_bounds),
+                    np.random.uniform(*self.sell_bounds)
+                ]
+
+                # Skip invalid starting points
+                if x0[0] <= x0[1] + MIN_THRESHOLD_GAP:
+                    continue
+
+                try:
+                    result = minimize(
+                        self._acquisition_function,
+                        x0,
+                        bounds=[self.buy_bounds, self.sell_bounds],
+                        method='L-BFGS-B'
+                    )
+
+                    if -result.fun > best_acquisition:
+                        # Validate the point
+                        buy, sell = result.x[0], result.x[1]
+                        if buy > sell + MIN_THRESHOLD_GAP:
+                            best_acquisition = -result.fun
+                            best_next_point = result.x
+                except:
+                    continue
+
+            if best_next_point is None:
+                # Fallback to random valid point
+                while True:
+                    buy = np.random.uniform(*self.buy_bounds)
+                    sell = np.random.uniform(*self.sell_bounds)
+                    if buy > sell + MIN_THRESHOLD_GAP:
+                        best_next_point = [buy, sell]
+                        break
+
+            # Evaluate the objective at the new point
+            buy, sell = validate_thresholds(best_next_point[0], best_next_point[1])
+            score = objective_function(buy, sell)
+
+            # Update observations
+            self.X_observed.append([buy, sell])
+            self.y_observed.append(score)
+
+            # Update best
+            if score > self.best_score:
+                self.best_score = score
+                self.best_params = {'buy_threshold': buy, 'sell_threshold': sell}
+
+            # Refit GP
+            X = np.array(self.X_observed)
+            y = np.array(self.y_observed)
+            self.gp.fit(X, y)
+
+            if verbose:
+                print(f"  Iteration {i+1}/{self.n_iterations}: Buy={buy}, Sell={sell}, Sharpe={score:.3f} (Best: {self.best_score:.3f})")
+
+        if verbose:
+            print(f"Bayesian Optimization complete. Best: Buy={self.best_params['buy_threshold']}, Sell={self.best_params['sell_threshold']}, Sharpe={self.best_score:.3f}")
+
+        return {
+            **self.best_params,
+            'sharpe_ratio': self.best_score,
+            'n_evaluations': len(self.y_observed),
+            'optimization_method': 'bayesian_gp'
+        }
+
+    def get_uncertainty_map(self, resolution=20):
+        """
+        Get GP uncertainty map for visualization.
+
+        Returns:
+        --------
+        dict : Grid of buy/sell values with predicted mean and std
+        """
+        buy_range = np.linspace(*self.buy_bounds, resolution)
+        sell_range = np.linspace(*self.sell_bounds, resolution)
+
+        predictions = []
+        for buy in buy_range:
+            for sell in sell_range:
+                if buy > sell + MIN_THRESHOLD_GAP:
+                    mu, sigma = self.gp.predict([[buy, sell]], return_std=True)
+                    predictions.append({
+                        'buy': buy, 'sell': sell,
+                        'predicted_sharpe': mu[0],
+                        'uncertainty': sigma[0]
+                    })
+
+        return predictions
+
+
+class ContextualBanditOptimizer:
+    """
+    Contextual Bandit with Thompson Sampling for online threshold adaptation.
+
+    Maps market context (features) to threshold adjustments.
+    Uses Bayesian linear regression for fast online updates.
+    """
+
+    def __init__(self, n_features=10, n_arms=9, alpha=1.0):
+        """
+        Initialize contextual bandit.
+
+        Parameters:
+        -----------
+        n_features : int
+            Number of context features
+        n_arms : int
+            Number of discrete threshold configurations (arms)
+        alpha : float
+            Exploration parameter for Thompson Sampling
+        """
+        self.n_features = n_features
+        self.n_arms = n_arms
+        self.alpha = alpha
+
+        # Define arms as (buy_offset, sell_offset) from base thresholds
+        # Creates a 3x3 grid of adjustments
+        self.arms = [
+            (-5, -5), (-5, 0), (-5, 5),
+            (0, -5),  (0, 0),  (0, 5),
+            (5, -5),  (5, 0),  (5, 5)
+        ]
+
+        # Bayesian linear regression parameters for each arm
+        # Using simplified version: maintain mean and precision for each arm-feature combo
+        self.B = [np.eye(n_features) for _ in range(n_arms)]  # Precision matrices
+        self.mu = [np.zeros(n_features) for _ in range(n_arms)]  # Mean vectors
+        self.f = [np.zeros(n_features) for _ in range(n_arms)]  # Feature sums
+
+        # History for analysis
+        self.history = []
+        self.arm_counts = np.zeros(n_arms)
+        self.arm_rewards = np.zeros(n_arms)
+
+    def _extract_context(self, alpha_factors, regime_features):
+        """
+        Extract context vector from alpha factors and regime features.
+
+        Returns:
+        --------
+        np.array : Normalized context vector
+        """
+        context = []
+
+        # Regime features (normalized)
+        context.append(regime_features.get('slope', 0) / 10)
+        context.append(regime_features.get('volatility', 0.2) / 0.5)
+        context.append(regime_features.get('adx', 25) / 50)
+        context.append((regime_features.get('rsi', 50) - 50) / 50)
+
+        # Key alpha factors (normalized)
+        context.append(alpha_factors.get('momentum_20d', 0) / 20)
+        context.append(alpha_factors.get('zscore_ma20', 0) / 3)
+        context.append(alpha_factors.get('vol_ratio', 1) - 1)
+        context.append(alpha_factors.get('volume_price_trend', 0) / 50)
+        context.append((alpha_factors.get('trend_consistency_20d', 50) - 50) / 50)
+        context.append(alpha_factors.get('ma_alignment', 1.5) / 3)
+
+        # Pad or truncate to n_features
+        context = context[:self.n_features]
+        while len(context) < self.n_features:
+            context.append(0)
+
+        return np.array(context)
+
+    def select_arm(self, context):
+        """
+        Select arm using Thompson Sampling.
+
+        Parameters:
+        -----------
+        context : np.array
+            Context vector
+
+        Returns:
+        --------
+        int : Selected arm index
+        """
+        samples = []
+
+        for arm in range(self.n_arms):
+            # Sample from posterior
+            try:
+                # Compute posterior variance
+                B_inv = np.linalg.inv(self.B[arm])
+                theta_sample = np.random.multivariate_normal(self.mu[arm], self.alpha * B_inv)
+
+                # Predicted reward
+                reward_sample = np.dot(context, theta_sample)
+            except:
+                # Fallback to prior
+                reward_sample = np.random.normal(0, self.alpha)
+
+            samples.append(reward_sample)
+
+        return np.argmax(samples)
+
+    def update(self, arm, context, reward):
+        """
+        Update posterior after observing reward.
+
+        Parameters:
+        -----------
+        arm : int
+            Arm that was pulled
+        context : np.array
+            Context vector
+        reward : float
+            Observed reward (e.g., Sharpe ratio)
+        """
+        # Update precision matrix
+        self.B[arm] += np.outer(context, context)
+
+        # Update feature sum
+        self.f[arm] += reward * context
+
+        # Update mean (solve B * mu = f)
+        try:
+            self.mu[arm] = np.linalg.solve(self.B[arm], self.f[arm])
+        except:
+            pass
+
+        # Update statistics
+        self.arm_counts[arm] += 1
+        self.arm_rewards[arm] += reward
+
+        # Record history
+        self.history.append({
+            'arm': arm,
+            'context': context.tolist(),
+            'reward': reward
+        })
+
+    def get_threshold_adjustment(self, base_buy, base_sell, alpha_factors, regime_features):
+        """
+        Get threshold adjustment based on current context.
+
+        Parameters:
+        -----------
+        base_buy : int
+            Base buy threshold from Bayesian optimization
+        base_sell : int
+            Base sell threshold from Bayesian optimization
+        alpha_factors : dict
+            Current alpha factor values
+        regime_features : dict
+            Current regime features
+
+        Returns:
+        --------
+        tuple : (adjusted_buy, adjusted_sell, arm_index)
+        """
+        context = self._extract_context(alpha_factors, regime_features)
+        arm = self.select_arm(context)
+
+        buy_offset, sell_offset = self.arms[arm]
+
+        adjusted_buy = base_buy + buy_offset
+        adjusted_sell = base_sell + sell_offset
+
+        # Validate
+        adjusted_buy, adjusted_sell = validate_thresholds(adjusted_buy, adjusted_sell)
+
+        return adjusted_buy, adjusted_sell, arm, context
+
+    def learn_from_trade(self, arm, context, sharpe_improvement):
+        """
+        Update bandit after a trading period.
+
+        Parameters:
+        -----------
+        arm : int
+            Arm that was used
+        context : np.array
+            Context when arm was selected
+        sharpe_improvement : float
+            Improvement in Sharpe ratio vs baseline
+        """
+        # Normalize reward to [0, 1] range roughly
+        reward = np.clip(sharpe_improvement + 0.5, 0, 1)
+        self.update(arm, context, reward)
+
+    def get_arm_statistics(self):
+        """Get statistics for each arm."""
+        stats = []
+        for i, (buy_off, sell_off) in enumerate(self.arms):
+            avg_reward = self.arm_rewards[i] / max(self.arm_counts[i], 1)
+            stats.append({
+                'arm': i,
+                'buy_offset': buy_off,
+                'sell_offset': sell_off,
+                'times_selected': int(self.arm_counts[i]),
+                'avg_reward': avg_reward
+            })
+        return stats
+
+
+class HybridMLOptimizer:
+    """
+    Hybrid ML Optimizer combining Bayesian Optimization and Contextual Bandits.
+
+    Stage 1: Bayesian Optimization finds globally optimal thresholds
+    Stage 2: Contextual Bandit makes real-time adjustments based on market context
+
+    This approach is both efficient (few evaluations) and adaptive (online learning).
+    """
+
+    def __init__(self):
+        self.bayesian_optimizer = None
+        self.contextual_bandit = None
+        self.base_thresholds = {'buy_threshold': 65, 'sell_threshold': 35}
+        self.is_initialized = False
+        self.optimization_history = []
+
+    def initialize(self, df, objective_function, verbose=True):
+        """
+        Initialize the hybrid optimizer with Bayesian optimization.
+
+        Parameters:
+        -----------
+        df : pd.DataFrame
+            Historical data for optimization
+        objective_function : callable
+            Function(buy, sell) -> Sharpe ratio
+        verbose : bool
+            Print progress
+
+        Returns:
+        --------
+        dict : Optimal base thresholds
+        """
+        if verbose:
+            print("\n" + "="*60)
+            print("HYBRID ML OPTIMIZER - Stage 1: Bayesian Optimization")
+            print("="*60)
+
+        # Stage 1: Run Bayesian Optimization
+        self.bayesian_optimizer = BayesianThresholdOptimizer(
+            buy_bounds=(50, 80),
+            sell_bounds=(20, 50),
+            n_initial=5,
+            n_iterations=12
+        )
+
+        result = self.bayesian_optimizer.optimize(objective_function, verbose=verbose)
+
+        self.base_thresholds = {
+            'buy_threshold': result['buy_threshold'],
+            'sell_threshold': result['sell_threshold']
+        }
+
+        # Stage 2: Initialize Contextual Bandit
+        if verbose:
+            print("\n" + "="*60)
+            print("HYBRID ML OPTIMIZER - Stage 2: Contextual Bandit Initialized")
+            print("="*60)
+
+        self.contextual_bandit = ContextualBanditOptimizer(n_features=10, n_arms=9)
+
+        self.is_initialized = True
+
+        if verbose:
+            print(f"Base thresholds: Buy={self.base_thresholds['buy_threshold']}, Sell={self.base_thresholds['sell_threshold']}")
+            print("Contextual Bandit ready for online adaptation")
+
+        return {
+            **result,
+            'optimization_method': 'hybrid_bayesian_bandit'
+        }
+
+    def get_adaptive_thresholds(self, alpha_factors, regime_features, verbose=False):
+        """
+        Get contextually-adapted thresholds using the bandit.
+
+        Parameters:
+        -----------
+        alpha_factors : dict
+            Current alpha factor values
+        regime_features : dict
+            Current regime features
+        verbose : bool
+            Print debug info
+
+        Returns:
+        --------
+        dict : Adapted thresholds with metadata
+        """
+        if not self.is_initialized:
+            return {
+                'buy_threshold': 65,
+                'sell_threshold': 35,
+                'adapted': False
+            }
+
+        # Get bandit's adjustment
+        buy, sell, arm, context = self.contextual_bandit.get_threshold_adjustment(
+            self.base_thresholds['buy_threshold'],
+            self.base_thresholds['sell_threshold'],
+            alpha_factors,
+            regime_features
+        )
+
+        buy_offset, sell_offset = self.contextual_bandit.arms[arm]
+
+        if verbose:
+            print(f"Bandit selected arm {arm}: Buy offset={buy_offset}, Sell offset={sell_offset}")
+
+        return {
+            'buy_threshold': buy,
+            'sell_threshold': sell,
+            'base_buy': self.base_thresholds['buy_threshold'],
+            'base_sell': self.base_thresholds['sell_threshold'],
+            'arm_selected': arm,
+            'buy_offset': buy_offset,
+            'sell_offset': sell_offset,
+            'context': context,
+            'adapted': True
+        }
+
+    def update_from_performance(self, arm, context, actual_sharpe, baseline_sharpe):
+        """
+        Update the bandit based on observed performance.
+
+        Parameters:
+        -----------
+        arm : int
+            Arm that was used
+        context : np.array
+            Context when arm was selected
+        actual_sharpe : float
+            Actual Sharpe ratio achieved
+        baseline_sharpe : float
+            Baseline Sharpe (e.g., from base thresholds)
+        """
+        if self.contextual_bandit is not None:
+            improvement = actual_sharpe - baseline_sharpe
+            self.contextual_bandit.learn_from_trade(arm, context, improvement)
+
+            self.optimization_history.append({
+                'arm': arm,
+                'actual_sharpe': actual_sharpe,
+                'baseline_sharpe': baseline_sharpe,
+                'improvement': improvement
+            })
+
+    def get_optimization_summary(self):
+        """Get summary of optimization performance."""
+        summary = {
+            'base_thresholds': self.base_thresholds,
+            'bayesian_evaluations': len(self.bayesian_optimizer.y_observed) if self.bayesian_optimizer else 0,
+            'bayesian_best_sharpe': self.bayesian_optimizer.best_score if self.bayesian_optimizer else 0,
+            'bandit_updates': len(self.optimization_history),
+            'arm_statistics': self.contextual_bandit.get_arm_statistics() if self.contextual_bandit else []
+        }
+
+        if self.optimization_history:
+            improvements = [h['improvement'] for h in self.optimization_history]
+            summary['avg_improvement'] = np.mean(improvements)
+            summary['total_improvement'] = np.sum(improvements)
+
+        return summary
 
 
 def validate_thresholds(buy_threshold, sell_threshold, min_gap=MIN_THRESHOLD_GAP):
@@ -1607,8 +2226,12 @@ class StrategyEnsemble:
 
 class AdaptiveStrategyOptimizer:
     """
-    Adaptive Strategy Optimizer that re-optimizes thresholds every N days.
-    This allows the strategy to adapt to changing market conditions over time.
+    Adaptive Strategy Optimizer using HYBRID ML approach:
+
+    1. Bayesian Optimization (Gaussian Process) - Finds optimal base thresholds efficiently
+    2. Contextual Bandit (Thompson Sampling) - Makes real-time adjustments based on market context
+
+    Re-optimizes every N days with ML-driven threshold selection.
     """
 
     def __init__(self, df, reoptimize_days=90):
@@ -1625,12 +2248,66 @@ class AdaptiveStrategyOptimizer:
         self.df = df.copy()
         self.reoptimize_days = reoptimize_days
         self.optimization_periods = []
-        self.trade_signals = []  # List of trade points for visualization
-        self.period_thresholds = []  # Thresholds for each period
+        self.trade_signals = []
+        self.period_thresholds = []
+        self.hybrid_optimizer = None
+        self.alpha_calculator = AlphaFactorCalculator()
+        self.regime_detector = MarketRegimeDetector()
+
+    def _create_objective_function(self, optimization_df):
+        """
+        Create objective function for Bayesian optimization.
+
+        Returns:
+        --------
+        callable : Function(buy, sell) -> Sharpe ratio
+        """
+        def objective(buy_threshold, sell_threshold):
+            if 'Composite_Index' not in optimization_df.columns:
+                return 0
+
+            df = optimization_df.copy()
+            df['Position'] = 0
+            current_position = 0
+
+            exit_buy = sell_threshold + 5
+            exit_sell = buy_threshold - 5
+
+            for i in range(1, len(df)):
+                idx = df.index[i]
+                prev_idx = df.index[i-1]
+                composite_value = df.at[idx, 'Composite_Index']
+                current_position = df.at[prev_idx, 'Position']
+
+                if current_position == 0:
+                    if composite_value >= buy_threshold:
+                        current_position = 1
+                    elif composite_value <= sell_threshold:
+                        current_position = -1
+                elif current_position == 1:
+                    if composite_value <= exit_buy:
+                        current_position = 0
+                elif current_position == -1:
+                    if composite_value >= exit_sell:
+                        current_position = 0
+
+                df.at[idx, 'Position'] = current_position
+
+            df['Daily_Return'] = df['Close'].pct_change()
+            df['Strategy_Return'] = df['Position'] * df['Daily_Return'].shift(-1)
+
+            returns = df['Strategy_Return'].dropna()
+            if len(returns) < 10 or returns.std() == 0:
+                return 0
+
+            sharpe = np.sqrt(252) * returns.mean() / returns.std()
+            return sharpe
+
+        return objective
 
     def optimize_adaptive(self, lookback_days=60):
         """
-        Perform adaptive optimization with periodic re-optimization.
+        Perform adaptive optimization using HYBRID ML (Bayesian + Bandit).
 
         Parameters:
         -----------
@@ -1663,7 +2340,16 @@ class AdaptiveStrategyOptimizer:
         current_sell_threshold = 40
         last_optimization_idx = 0
 
-        print(f"Starting adaptive optimization (re-optimize every {self.reoptimize_days} days)...")
+        # Track bandit context for learning
+        current_arm = None
+        current_context = None
+        period_start_value = 1000
+
+        print("\n" + "="*70)
+        print("HYBRID ML ADAPTIVE OPTIMIZER")
+        print("Bayesian Optimization + Contextual Bandit")
+        print(f"Re-optimize every {self.reoptimize_days} days")
+        print("="*70)
 
         for i in range(1, n_rows):
             idx = df.index[i]
@@ -1674,26 +2360,76 @@ class AdaptiveStrategyOptimizer:
                 start_idx = max(0, i - lookback_days)
                 optimization_df = df.iloc[start_idx:i].copy()
 
-                if len(optimization_df) >= 30:  # Minimum data required
-                    # Run optimization on this period
-                    optimizer = StrategyOptimizer(optimization_df)
-                    result = optimizer.optimize_thresholds()
+                if len(optimization_df) >= 30:
+                    print(f"\n--- Period {len(self.period_thresholds) + 1} Optimization ---")
 
-                    if result:
+                    # Update bandit from previous period's performance
+                    if self.hybrid_optimizer is not None and current_arm is not None:
+                        current_value = df.at[df.index[i-1], 'Strategy_Value'] if 'Strategy_Value' in df.columns else 1000
+                        period_return = (current_value / period_start_value - 1) * 100
+                        period_sharpe = period_return / 10  # Simplified sharpe proxy
+                        self.hybrid_optimizer.update_from_performance(
+                            current_arm, current_context, period_sharpe, 0
+                        )
+                        print(f"Bandit learning: Arm {current_arm} achieved {period_return:.2f}% return")
+
+                    # Create objective function
+                    objective = self._create_objective_function(optimization_df)
+
+                    # Initialize or update hybrid optimizer
+                    if self.hybrid_optimizer is None:
+                        self.hybrid_optimizer = HybridMLOptimizer()
+                        result = self.hybrid_optimizer.initialize(optimization_df, objective, verbose=True)
+                    else:
+                        # Run fresh Bayesian optimization for new period
+                        bayesian_opt = BayesianThresholdOptimizer(
+                            n_initial=3,
+                            n_iterations=8
+                        )
+                        result = bayesian_opt.optimize(objective, verbose=True)
+                        self.hybrid_optimizer.base_thresholds = {
+                            'buy_threshold': result['buy_threshold'],
+                            'sell_threshold': result['sell_threshold']
+                        }
+
+                    # Get regime and alpha factors for contextual adaptation
+                    regime, regime_features = self.regime_detector.detect_regime(optimization_df)
+                    alpha_factors = self.alpha_calculator.calculate_all_alphas(optimization_df)
+
+                    # Get contextual bandit adjustment
+                    if self.hybrid_optimizer.contextual_bandit is not None:
+                        adapted = self.hybrid_optimizer.get_adaptive_thresholds(
+                            alpha_factors, regime_features, verbose=True
+                        )
+                        current_buy_threshold = adapted['buy_threshold']
+                        current_sell_threshold = adapted['sell_threshold']
+                        current_arm = adapted['arm_selected']
+                        current_context = adapted['context']
+
+                        print(f"Bandit adjustment: Arm {current_arm} (Buy: {adapted['base_buy']}+{adapted['buy_offset']}, Sell: {adapted['base_sell']}+{adapted['sell_offset']})")
+                    else:
                         current_buy_threshold = result['buy_threshold']
                         current_sell_threshold = result['sell_threshold']
 
-                        # Record this optimization period
-                        period_info = {
-                            'start_date': str(df.index[start_idx]) if hasattr(df.index[start_idx], 'strftime') else str(df.index[start_idx]),
-                            'end_date': str(idx) if hasattr(idx, 'strftime') else str(idx),
-                            'buy_threshold': current_buy_threshold,
-                            'sell_threshold': current_sell_threshold,
-                            'regime': result.get('regime', 'unknown'),
-                            'sharpe': result.get('sharpe_ratio', 0)
-                        }
-                        self.period_thresholds.append(period_info)
-                        print(f"Period {len(self.period_thresholds)}: Buy={current_buy_threshold}, Sell={current_sell_threshold}, Regime={period_info['regime']}")
+                    # Record period info
+                    period_info = {
+                        'start_date': str(df.index[start_idx]) if hasattr(df.index[start_idx], 'strftime') else str(df.index[start_idx]),
+                        'end_date': str(idx) if hasattr(idx, 'strftime') else str(idx),
+                        'buy_threshold': current_buy_threshold,
+                        'sell_threshold': current_sell_threshold,
+                        'regime': regime,
+                        'sharpe': result.get('sharpe_ratio', 0),
+                        'optimization_method': result.get('optimization_method', 'bayesian_gp'),
+                        'bayesian_evaluations': result.get('n_evaluations', 0)
+                    }
+                    self.period_thresholds.append(period_info)
+
+                    print(f"\nPeriod {len(self.period_thresholds)}: Buy={current_buy_threshold}, Sell={current_sell_threshold}")
+                    print(f"Regime: {regime}, Bayesian Sharpe: {result.get('sharpe_ratio', 0):.3f}")
+                    print(f"Evaluations: {result.get('n_evaluations', 0)} (vs 144 for grid search)")
+
+                    # Track period start for bandit learning
+                    period_start_value = df.at[idx, 'Strategy_Value'] if 'Strategy_Value' in df.columns else 1000
 
                 last_optimization_idx = i
 
@@ -1703,7 +2439,6 @@ class AdaptiveStrategyOptimizer:
 
             # Get composite value
             composite_value = df.at[idx, 'Composite_Index']
-            prev_position = current_position
 
             # Trading logic
             exit_buy = current_sell_threshold + 5
@@ -1778,7 +2513,27 @@ class AdaptiveStrategyOptimizer:
 
         self.df = df
 
-        print(f"Adaptive optimization complete: {len(self.period_thresholds)} periods, {num_trades} trades")
+        # Print summary
+        print("\n" + "="*70)
+        print("HYBRID ML OPTIMIZATION COMPLETE")
+        print("="*70)
+        print(f"Periods: {len(self.period_thresholds)}")
+        print(f"Trades: {num_trades}")
+        print(f"Total Return: {total_return:.2f}%")
+        print(f"Sharpe Ratio: {sharpe:.3f}")
+        print(f"Max Drawdown: {max_dd:.2f}%")
+
+        if self.hybrid_optimizer:
+            summary = self.hybrid_optimizer.get_optimization_summary()
+            print(f"\nBayesian evaluations (total): ~{summary['bayesian_evaluations'] * len(self.period_thresholds)}")
+            print(f"Grid search equivalent: {144 * len(self.period_thresholds)} evaluations")
+            print(f"Efficiency gain: {144 / max(summary['bayesian_evaluations'], 1):.1f}x faster")
+
+            if summary['arm_statistics']:
+                print("\nContextual Bandit Arm Usage:")
+                for arm_stat in summary['arm_statistics']:
+                    if arm_stat['times_selected'] > 0:
+                        print(f"  Arm {arm_stat['arm']}: Buy{arm_stat['buy_offset']:+d}, Sell{arm_stat['sell_offset']:+d} - Used {arm_stat['times_selected']}x, Avg reward: {arm_stat['avg_reward']:.3f}")
 
         return {
             'df': df,
@@ -1788,7 +2543,8 @@ class AdaptiveStrategyOptimizer:
             'sharpe_ratio': sharpe,
             'max_drawdown': max_dd,
             'num_trades': num_trades,
-            'num_periods': len(self.period_thresholds)
+            'num_periods': len(self.period_thresholds),
+            'optimization_method': 'hybrid_bayesian_bandit'
         }
 
     def get_trade_signals(self):
@@ -1798,6 +2554,12 @@ class AdaptiveStrategyOptimizer:
     def get_period_thresholds(self):
         """Get thresholds for each optimization period."""
         return self.period_thresholds
+
+    def get_optimization_summary(self):
+        """Get summary of hybrid ML optimization."""
+        if self.hybrid_optimizer:
+            return self.hybrid_optimizer.get_optimization_summary()
+        return {}
 
 
 class StrategyOptimizer:
