@@ -312,13 +312,45 @@ chart_data = {
     'bb_lower': [float(x) if 'BB_lower' in last_60.columns and not pd.isna(x) else None for x in (last_60['BB_lower'] if 'BB_lower' in last_60.columns else [None] * len(last_60))]
 }
 
-# Composite index chart data with thresholds
+# Composite index chart data with period-varying thresholds
+# Build threshold arrays that change based on optimization periods
+composite_dates = chart_data['dates']
+buy_threshold_array = []
+sell_threshold_array = []
+
+if optimization_info and 'period_thresholds' in optimization_info:
+    period_thresholds = optimization_info['period_thresholds']
+
+    for date_str in composite_dates:
+        # Find which period this date belongs to
+        matched_buy = 60
+        matched_sell = 40
+
+        for period in period_thresholds:
+            period_end = period.get('end_date', '')
+            if date_str <= period_end or period == period_thresholds[-1]:
+                matched_buy = period.get('buy_threshold', 60)
+                matched_sell = period.get('sell_threshold', 40)
+                break
+
+        buy_threshold_array.append(matched_buy)
+        sell_threshold_array.append(matched_sell)
+else:
+    # Default static thresholds
+    default_buy = optimization_info['buy_threshold'] if optimization_info else 60
+    default_sell = optimization_info['sell_threshold'] if optimization_info else 40
+    buy_threshold_array = [default_buy] * len(composite_dates)
+    sell_threshold_array = [default_sell] * len(composite_dates)
+
 composite_data = {
-    'dates': chart_data['dates'],
+    'dates': composite_dates,
     'index': [float(x) if not pd.isna(x) else 50.0 for x in composite_index.tail(60)],
     'close': chart_data['close'],
     'buy_threshold': optimization_info['buy_threshold'] if optimization_info else 60,
-    'sell_threshold': optimization_info['sell_threshold'] if optimization_info else 40
+    'sell_threshold': optimization_info['sell_threshold'] if optimization_info else 40,
+    'buy_threshold_array': buy_threshold_array,
+    'sell_threshold_array': sell_threshold_array,
+    'period_thresholds': optimization_info.get('period_thresholds', []) if optimization_info else []
 }
 
 # Strategy chart data (now using smart optimizer output)
@@ -623,53 +655,54 @@ function displayCompositeChart(compositeData) {
         compositeChart.destroy();
     }
 
-    const buyThreshold = compositeData.buy_threshold || 60;
-    const sellThreshold = compositeData.sell_threshold || 40;
     const numPoints = compositeData.dates.length;
 
-    // Create threshold line arrays
-    const buyThresholdLine = Array(numPoints).fill(buyThreshold);
-    const sellThresholdLine = Array(numPoints).fill(sellThreshold);
+    // Use period-varying threshold arrays if available, otherwise use static
+    const buyThresholdLine = compositeData.buy_threshold_array || Array(numPoints).fill(compositeData.buy_threshold || 60);
+    const sellThresholdLine = compositeData.sell_threshold_array || Array(numPoints).fill(compositeData.sell_threshold || 40);
     const neutralLine = Array(numPoints).fill(50);
 
-    // Color the composite index based on zone
-    const indexColors = compositeData.index.map(val => {
-        if (val >= buyThreshold) return 'rgba(34, 197, 94, 1)';      // Green - buy zone
-        if (val <= sellThreshold) return 'rgba(239, 68, 68, 1)';     // Red - sell zone
-        return 'rgba(99, 102, 241, 1)';                               // Blue - neutral
+    // Get unique threshold values for legend
+    const uniqueBuyThresholds = [...new Set(buyThresholdLine)];
+    const uniqueSellThresholds = [...new Set(sellThresholdLine)];
+    const hasVaryingThresholds = uniqueBuyThresholds.length > 1 || uniqueSellThresholds.length > 1;
+
+    // Color the composite index based on current threshold at each point
+    const indexColors = compositeData.index.map((val, i) => {
+        const buyTh = buyThresholdLine[i];
+        const sellTh = sellThresholdLine[i];
+        if (val >= buyTh) return 'rgba(34, 197, 94, 1)';      // Green - buy zone
+        if (val <= sellTh) return 'rgba(239, 68, 68, 1)';     // Red - sell zone
+        return 'rgba(99, 102, 241, 1)';                        // Blue - neutral
     });
+
+    // Create subtitle based on whether thresholds vary
+    let subtitleText;
+    if (hasVaryingThresholds) {
+        const periods = compositeData.period_thresholds || [];
+        subtitleText = `Adaptive Thresholds (${periods.length} periods) | Green=BUY | Red=SELL | Blue=HOLD`;
+    } else {
+        const buyTh = buyThresholdLine[0];
+        const sellTh = sellThresholdLine[0];
+        subtitleText = `BUY >= ${buyTh} | SELL <= ${sellTh} | Blue = HOLD`;
+    }
+
+    // Build legend label for thresholds
+    let buyLabel = 'Buy Threshold';
+    let sellLabel = 'Sell Threshold';
+    if (hasVaryingThresholds) {
+        buyLabel = `Buy Threshold (${uniqueBuyThresholds.join('→')})`;
+        sellLabel = `Sell Threshold (${uniqueSellThresholds.join('→')})`;
+    } else {
+        buyLabel = `BUY >= ${buyThresholdLine[0]}`;
+        sellLabel = `SELL <= ${sellThresholdLine[0]}`;
+    }
 
     compositeChart = new Chart(ctx, {
         type: 'line',
         data: {
             labels: compositeData.dates,
             datasets: [
-                // Buy zone fill (above buy threshold)
-                {
-                    label: 'Buy Zone',
-                    data: buyThresholdLine,
-                    borderColor: 'transparent',
-                    backgroundColor: 'rgba(34, 197, 94, 0.1)',
-                    fill: {
-                        target: { value: 100 },
-                        above: 'rgba(34, 197, 94, 0.1)'
-                    },
-                    pointRadius: 0,
-                    yAxisID: 'y'
-                },
-                // Sell zone fill (below sell threshold)
-                {
-                    label: 'Sell Zone',
-                    data: sellThresholdLine,
-                    borderColor: 'transparent',
-                    backgroundColor: 'rgba(239, 68, 68, 0.1)',
-                    fill: {
-                        target: { value: 0 },
-                        below: 'rgba(239, 68, 68, 0.1)'
-                    },
-                    pointRadius: 0,
-                    yAxisID: 'y'
-                },
                 // Composite Index line with colored points
                 {
                     label: 'Composite Index',
@@ -684,26 +717,34 @@ function displayCompositeChart(compositeData) {
                     pointBorderColor: indexColors,
                     yAxisID: 'y'
                 },
-                // Buy threshold line
+                // Buy threshold line (varying)
                 {
-                    label: `BUY >= ${buyThreshold}`,
+                    label: buyLabel,
                     data: buyThresholdLine,
                     borderColor: 'rgb(34, 197, 94)',
-                    borderDash: [10, 5],
-                    borderWidth: 2,
+                    backgroundColor: 'rgba(34, 197, 94, 0.15)',
+                    borderWidth: 2.5,
                     pointRadius: 0,
-                    fill: false,
+                    fill: {
+                        target: { value: 100 },
+                        above: 'rgba(34, 197, 94, 0.08)'
+                    },
+                    stepped: hasVaryingThresholds ? 'before' : false,
                     yAxisID: 'y'
                 },
-                // Sell threshold line
+                // Sell threshold line (varying)
                 {
-                    label: `SELL <= ${sellThreshold}`,
+                    label: sellLabel,
                     data: sellThresholdLine,
                     borderColor: 'rgb(239, 68, 68)',
-                    borderDash: [10, 5],
-                    borderWidth: 2,
+                    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+                    borderWidth: 2.5,
                     pointRadius: 0,
-                    fill: false,
+                    fill: {
+                        target: { value: 0 },
+                        below: 'rgba(239, 68, 68, 0.08)'
+                    },
+                    stepped: hasVaryingThresholds ? 'before' : false,
                     yAxisID: 'y'
                 },
                 // Neutral line (50)
@@ -716,6 +757,19 @@ function displayCompositeChart(compositeData) {
                     pointRadius: 0,
                     fill: false,
                     yAxisID: 'y'
+                },
+                // Stock price on secondary axis
+                {
+                    label: 'Stock Price',
+                    data: compositeData.close,
+                    borderColor: 'rgba(75, 192, 192, 0.8)',
+                    backgroundColor: 'transparent',
+                    tension: 0.2,
+                    borderWidth: 1.5,
+                    borderDash: [3, 3],
+                    pointRadius: 0,
+                    fill: false,
+                    yAxisID: 'y1'
                 }
             ]
         },
@@ -728,12 +782,14 @@ function displayCompositeChart(compositeData) {
             plugins: {
                 title: {
                     display: true,
-                    text: 'COMPOSITE INDEX - Trading Signal Zones',
+                    text: hasVaryingThresholds
+                        ? 'COMPOSITE INDEX - Adaptive Thresholds (Re-optimized Every 90 Days)'
+                        : 'COMPOSITE INDEX - Trading Signal Zones',
                     font: { size: 16, weight: 'bold' }
                 },
                 subtitle: {
                     display: true,
-                    text: `Green Zone = BUY (>=${buyThreshold}) | Red Zone = SELL (<=${sellThreshold}) | Blue = HOLD`,
+                    text: subtitleText,
                     font: { size: 12 },
                     color: '#666'
                 },
@@ -741,21 +797,32 @@ function displayCompositeChart(compositeData) {
                     display: true,
                     position: 'bottom',
                     labels: {
-                        filter: function(item, chart) {
-                            // Hide zone fills from legend
-                            return !['Buy Zone', 'Sell Zone'].includes(item.text);
-                        }
+                        usePointStyle: true,
+                        padding: 12
                     }
                 },
                 tooltip: {
                     callbacks: {
                         label: function(context) {
+                            const dataIndex = context.dataIndex;
+
                             if (context.dataset.label === 'Composite Index') {
                                 const val = context.raw;
+                                const buyTh = buyThresholdLine[dataIndex];
+                                const sellTh = sellThresholdLine[dataIndex];
                                 let signal = 'HOLD';
-                                if (val >= buyThreshold) signal = 'BUY SIGNAL';
-                                if (val <= sellThreshold) signal = 'SELL SIGNAL';
-                                return `Index: ${val.toFixed(1)} - ${signal}`;
+                                if (val >= buyTh) signal = 'BUY SIGNAL';
+                                if (val <= sellTh) signal = 'SELL SIGNAL';
+                                return `Index: ${val.toFixed(1)} - ${signal} (Buy>=${buyTh}, Sell<=${sellTh})`;
+                            }
+                            if (context.dataset.label === 'Stock Price') {
+                                return `Price: $${context.raw.toFixed(2)}`;
+                            }
+                            if (context.dataset.label.includes('Buy')) {
+                                return `Buy Threshold: ${context.raw}`;
+                            }
+                            if (context.dataset.label.includes('Sell')) {
+                                return `Sell Threshold: ${context.raw}`;
                             }
                             return context.dataset.label + ': ' + context.raw;
                         }
@@ -771,25 +838,33 @@ function displayCompositeChart(compositeData) {
                     max: 100,
                     title: {
                         display: true,
-                        text: 'Composite Index',
+                        text: 'Composite Index (0-100)',
                         font: { weight: 'bold' }
                     },
                     ticks: {
-                        stepSize: 10,
-                        callback: function(value) {
-                            if (value === buyThreshold) return value + ' (Buy)';
-                            if (value === sellThreshold) return value + ' (Sell)';
-                            if (value === 50) return '50 (Neutral)';
-                            return value;
-                        }
+                        stepSize: 10
                     },
                     grid: {
                         color: function(context) {
-                            if (context.tick.value === buyThreshold) return 'rgba(34, 197, 94, 0.3)';
-                            if (context.tick.value === sellThreshold) return 'rgba(239, 68, 68, 0.3)';
-                            if (context.tick.value === 50) return 'rgba(156, 163, 175, 0.3)';
+                            if (context.tick.value === 50) return 'rgba(156, 163, 175, 0.4)';
                             return 'rgba(0, 0, 0, 0.05)';
                         }
+                    }
+                },
+                y1: {
+                    type: 'linear',
+                    display: true,
+                    position: 'right',
+                    title: {
+                        display: true,
+                        text: 'Stock Price ($)',
+                        font: { weight: 'bold' }
+                    },
+                    ticks: {
+                        callback: value => '$' + value.toFixed(2)
+                    },
+                    grid: {
+                        drawOnChartArea: false
                     }
                 },
                 x: {
