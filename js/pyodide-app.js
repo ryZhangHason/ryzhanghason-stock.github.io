@@ -214,6 +214,42 @@ if optimize_strategy:
                     'optimization_info': optimization_info
                 }
 
+            # Get behavior analysis and alpha summary
+            behavior_analysis = optimizer.get_behavior_analysis()
+            alpha_summary = optimizer.get_alpha_summary()
+            trader_profiles = optimizer.get_trader_profiles()
+
+            # Extract behavior summary
+            behavior_summary = {}
+            if behavior_analysis:
+                if 'strategy_profile' in behavior_analysis:
+                    sp = behavior_analysis['strategy_profile']
+                    behavior_summary['style'] = sp.get('style', 'Unknown')
+                    behavior_summary['selectivity'] = sp.get('selectivity', 'Unknown')
+                    behavior_summary['long_exposure'] = sp.get('long_exposure', 0)
+                    behavior_summary['short_exposure'] = sp.get('short_exposure', 0)
+                    behavior_summary['cash_exposure'] = sp.get('cash_exposure', 0)
+
+                if 'indicator_usage' in behavior_analysis:
+                    iu = behavior_analysis['indicator_usage']
+                    behavior_summary['primary_indicators'] = [s['indicator'] for s in iu.get('primary_signals', [])]
+                    behavior_summary['confirmation_indicators'] = [s['indicator'] for s in iu.get('confirmation_signals', [])]
+
+                if 'trading_summary' in behavior_analysis:
+                    behavior_summary['summary'] = behavior_analysis['trading_summary']
+
+            # Extract alpha interpretations
+            alpha_interpretations = {}
+            if alpha_summary and 'message' not in alpha_summary:
+                for category, data in alpha_summary.items():
+                    if isinstance(data, dict) and 'interpretation' in data:
+                        alpha_interpretations[category] = data['interpretation']
+
+            # Add to optimization info
+            optimization_info['behavior_summary'] = behavior_summary
+            optimization_info['alpha_interpretations'] = alpha_interpretations
+            optimization_info['trader_profiles'] = trader_profiles
+
             print(f"Smart optimization complete - Regime: {optimization_info['regime']}, Buy: {optimization_info['buy_threshold']}, Sell: {optimization_info['sell_threshold']}")
     except Exception as e:
         print(f"Warning: Smart strategy optimization failed: {str(e)}")
@@ -327,31 +363,8 @@ function displayResults(result, chartData, compositeData, strategyChart) {
         `;
     }
 
-    // Display metrics
-    const metricsDiv = document.getElementById('metricsResult');
-    const metrics = result.recent_metrics;
-    metricsDiv.innerHTML = `
-<pre style="text-align: left; line-height: 1.8;">
-<strong>Model Performance (Last 120 Days):</strong>
-Accuracy: ${(result.recent_accuracy * 100).toFixed(1)}%
-${metrics.precision ? `Precision: ${(metrics.precision * 100).toFixed(1)}%` : ''}
-${metrics.f1_score ? `F1 Score: ${(metrics.f1_score * 100).toFixed(1)}%` : ''}
-${metrics.correct_predictions ? `Correct Predictions: ${metrics.correct_predictions}/${metrics.total_predictions}` : ''}
-
-<strong>Technical Indicators:</strong>
-Current Price: $${result.latest_price.toFixed(2)}
-20-day MA: $${result.indicators.ma20.toFixed(2)}
-50-day MA: $${result.indicators.ma50.toFixed(2)}
-
-RSI (14): ${result.indicators.rsi.toFixed(2)} ${result.indicators.rsi < 30 ? '(Oversold 📈)' : result.indicators.rsi > 70 ? '(Overbought 📉)' : '(Neutral)'}
-MACD: ${result.indicators.macd.toFixed(2)}
-Bollinger Bands: $${result.indicators.bb_lower.toFixed(2)} - $${result.indicators.bb_upper.toFixed(2)}
-Volatility: ${(result.indicators.volatility * 100).toFixed(2)}%
-
-⚠️ Disclaimer: This is for educational purposes only.
-Not financial advice. Always do your own research.
-</pre>
-    `.trim();
+    // Display metrics with alpha factors, behavior analysis, and trader profiles
+    displayMetrics(result, strategyChart);
 
     // Display price chart
     displayPriceChart(chartData, result.symbol);
@@ -363,6 +376,142 @@ Not financial advice. Always do your own research.
     if (strategyChart) {
         displayStrategyChart(strategyChart);
     }
+}
+
+function displayMetrics(result, strategyChart) {
+    const metricsDiv = document.getElementById('metricsResult');
+    const metrics = result.recent_metrics;
+    const oi = strategyChart ? strategyChart.optimization_info : null;
+
+    let metricsHtml = `<pre style="text-align: left; line-height: 1.6; font-size: 0.85em;">`;
+
+    // Model Performance
+    metricsHtml += `<strong>═══════════════════════════════════════</strong>\n`;
+    metricsHtml += `<strong>MODEL PERFORMANCE (Last 120 Days):</strong>\n`;
+    metricsHtml += `<strong>═══════════════════════════════════════</strong>\n`;
+    metricsHtml += `Accuracy: ${(result.recent_accuracy * 100).toFixed(1)}%\n`;
+    if (metrics.precision) metricsHtml += `Precision: ${(metrics.precision * 100).toFixed(1)}%\n`;
+    if (metrics.f1_score) metricsHtml += `F1 Score: ${(metrics.f1_score * 100).toFixed(1)}%\n`;
+    if (metrics.correct_predictions) metricsHtml += `Correct: ${metrics.correct_predictions}/${metrics.total_predictions}\n`;
+
+    // Technical Indicators
+    metricsHtml += `\n<strong>TECHNICAL INDICATORS:</strong>\n`;
+    metricsHtml += `Price: $${result.latest_price.toFixed(2)}\n`;
+    metricsHtml += `MA20: $${result.indicators.ma20.toFixed(2)} | MA50: $${result.indicators.ma50.toFixed(2)}\n`;
+    metricsHtml += `RSI: ${result.indicators.rsi.toFixed(1)} ${result.indicators.rsi < 30 ? '(Oversold)' : result.indicators.rsi > 70 ? '(Overbought)' : '(Neutral)'}\n`;
+    metricsHtml += `MACD: ${result.indicators.macd.toFixed(2)}\n`;
+    metricsHtml += `Volatility: ${(result.indicators.volatility * 100).toFixed(2)}%\n`;
+
+    // Alpha Factor Analysis
+    if (oi && oi.alpha_interpretations && Object.keys(oi.alpha_interpretations).length > 0) {
+        metricsHtml += `\n<strong>═══════════════════════════════════════</strong>\n`;
+        metricsHtml += `<strong>ALPHA FACTOR ANALYSIS:</strong>\n`;
+        metricsHtml += `<strong>═══════════════════════════════════════</strong>\n`;
+        for (const [category, interpretation] of Object.entries(oi.alpha_interpretations)) {
+            const categoryName = category.charAt(0).toUpperCase() + category.slice(1).replace(/_/g, ' ');
+            metricsHtml += `${categoryName}: ${interpretation}\n`;
+        }
+    }
+
+    // Behavior Analysis
+    if (oi && oi.behavior_summary && Object.keys(oi.behavior_summary).length > 0) {
+        const bs = oi.behavior_summary;
+        metricsHtml += `\n<strong>═══════════════════════════════════════</strong>\n`;
+        metricsHtml += `<strong>TRADER BEHAVIOR ANALYSIS:</strong>\n`;
+        metricsHtml += `<strong>═══════════════════════════════════════</strong>\n`;
+
+        if (bs.style) metricsHtml += `Strategy Style: ${bs.style}\n`;
+        if (bs.selectivity) metricsHtml += `Selectivity: ${bs.selectivity}\n`;
+
+        if (bs.long_exposure !== undefined) {
+            metricsHtml += `\nPosition Exposure:\n`;
+            metricsHtml += `  Long:  ${getPositionBar(bs.long_exposure)} ${bs.long_exposure.toFixed(0)}%\n`;
+            metricsHtml += `  Short: ${getPositionBar(bs.short_exposure)} ${bs.short_exposure.toFixed(0)}%\n`;
+            metricsHtml += `  Cash:  ${getPositionBar(bs.cash_exposure)} ${bs.cash_exposure.toFixed(0)}%\n`;
+        }
+
+        if (bs.primary_indicators && bs.primary_indicators.length > 0) {
+            metricsHtml += `\nPrimary Signals: ${bs.primary_indicators.join(', ')}\n`;
+        }
+        if (bs.confirmation_indicators && bs.confirmation_indicators.length > 0) {
+            metricsHtml += `Confirmation: ${bs.confirmation_indicators.join(', ')}\n`;
+        }
+
+        if (bs.summary && bs.summary.length > 0) {
+            metricsHtml += `\nStrategy Summary:\n`;
+            for (const line of bs.summary) {
+                metricsHtml += `  • ${line}\n`;
+            }
+        }
+    }
+
+    // 3 Trader Profiles
+    if (oi && oi.trader_profiles && Object.keys(oi.trader_profiles).length > 0) {
+        metricsHtml += `\n<strong>═══════════════════════════════════════</strong>\n`;
+        metricsHtml += `<strong>3 TRADER PROFILES COMPARISON:</strong>\n`;
+        metricsHtml += `<strong>═══════════════════════════════════════</strong>\n`;
+
+        const profileOrder = ['aggressive', 'medium', 'conservative'];
+        const profileEmojis = { aggressive: '🔥', medium: '⚖️', conservative: '🛡️' };
+
+        for (const profileType of profileOrder) {
+            const profile = oi.trader_profiles[profileType];
+            if (!profile) continue;
+
+            const emoji = profileEmojis[profileType];
+            const name = profileType.charAt(0).toUpperCase() + profileType.slice(1);
+            const th = profile.thresholds;
+            const metrics = profile.metrics;
+            const analysis = profile.analysis;
+
+            metricsHtml += `\n${emoji} <strong>${name} Trader</strong>\n`;
+            metricsHtml += `${'─'.repeat(35)}\n`;
+            metricsHtml += `Thresholds: Buy ≥ ${th.buy_threshold}, Sell ≤ ${th.sell_threshold}\n`;
+            metricsHtml += `${th.description}\n\n`;
+
+            // Performance metrics
+            metricsHtml += `Performance:\n`;
+            metricsHtml += `  Return: ${metrics.total_return >= 0 ? '+' : ''}${metrics.total_return}%\n`;
+            metricsHtml += `  Sharpe: ${metrics.sharpe_ratio}\n`;
+            metricsHtml += `  Max DD: ${metrics.max_drawdown}%\n`;
+            metricsHtml += `  Trades: ${metrics.num_trades} | Win Rate: ${metrics.win_rate}%\n\n`;
+
+            // Trading behavior
+            if (analysis.description) {
+                metricsHtml += `Trading Style: ${analysis.description.trading_style}\n`;
+                metricsHtml += `Entry: ${analysis.description.entry_behavior}\n`;
+                metricsHtml += `Exit: ${analysis.description.exit_behavior}\n`;
+                metricsHtml += `Risk: ${analysis.description.risk_approach}\n`;
+                metricsHtml += `Best Market: ${analysis.description.best_market}\n`;
+                metricsHtml += `Focus: ${analysis.description.indicator_focus}\n`;
+            }
+
+            // Position breakdown
+            if (analysis.position_breakdown) {
+                const pb = analysis.position_breakdown;
+                metricsHtml += `\nPositions: ${pb.long_pct}% Long | ${pb.short_pct}% Short | ${pb.cash_pct}% Cash\n`;
+            }
+
+            // Alpha usage
+            if (analysis.alpha_usage) {
+                metricsHtml += `\nAlpha Strategy:\n`;
+                metricsHtml += `  ${analysis.alpha_usage.description}\n`;
+            }
+        }
+    }
+
+    metricsHtml += `\n<strong>═══════════════════════════════════════</strong>\n`;
+    metricsHtml += `⚠️ Disclaimer: Educational purposes only.\n`;
+    metricsHtml += `   Not financial advice.\n`;
+    metricsHtml += `</pre>`;
+
+    metricsDiv.innerHTML = metricsHtml;
+}
+
+function getPositionBar(value) {
+    const filled = Math.round(value / 10);
+    const empty = 10 - filled;
+    return '[' + '█'.repeat(filled) + '░'.repeat(empty) + ']';
 }
 
 function displayPriceChart(chartData, symbol) {
