@@ -175,84 +175,104 @@ try:
 except Exception as e:
     raise Exception(f"Failed to calculate composite index: {str(e)}")
 
-# Step 7: Optimize strategy if requested using smart meta-learning optimizer
+# Step 7: Optimize strategy if requested using ADAPTIVE meta-learning optimizer (re-optimize every 90 days)
 strategy_results = None
 optimization_info = None
+trade_signals_data = []
 if optimize_strategy:
-    print("Step 7: Running smart meta-learning optimization...")
+    print("Step 7: Running ADAPTIVE meta-learning optimization (re-optimize every 90 days)...")
     try:
-        optimizer = StrategyOptimizer(df_features)
-        optimal_thresholds = optimizer.optimize_thresholds(min_period=120)
+        # Use AdaptiveStrategyOptimizer for 90-day rolling re-optimization
+        adaptive_optimizer = AdaptiveStrategyOptimizer(df_features, reoptimize_days=90)
+        adaptive_result = adaptive_optimizer.optimize_adaptive(lookback_days=60)
 
-        if optimal_thresholds:
-            df_with_strategy = optimizer.apply_optimal_strategy(optimal_thresholds)
+        if adaptive_result:
+            df_with_strategy = adaptive_result['df']
+            trade_signals_data = adaptive_result['trade_signals']
+            period_thresholds = adaptive_result['period_thresholds']
+
+            # Get latest threshold from the most recent period
+            latest_period = period_thresholds[-1] if period_thresholds else {'buy_threshold': 60, 'sell_threshold': 40, 'regime': 'unknown'}
+
+            # Also run standard optimizer for additional analysis
+            optimizer = StrategyOptimizer(df_features)
+            optimal_thresholds = optimizer.optimize_thresholds(min_period=120)
 
             # Extract optimization info
             optimization_info = {
-                'method': optimal_thresholds.get('optimization_method', 'grid_search'),
-                'regime': optimal_thresholds.get('regime', 'unknown'),
-                'ensemble_weights': optimal_thresholds.get('ensemble_weights', {}),
-                'buy_threshold': optimal_thresholds.get('buy_threshold', 60),
-                'sell_threshold': optimal_thresholds.get('sell_threshold', 40),
-                'sharpe_ratio': optimal_thresholds.get('sharpe_ratio', 0),
-                'total_return': optimal_thresholds.get('total_return', 0),
-                'win_rate': optimal_thresholds.get('win_rate', 0),
-                'num_trades': optimal_thresholds.get('num_trades', 0),
-                'max_drawdown': optimal_thresholds.get('max_drawdown', 0)
+                'method': 'adaptive_90day',
+                'regime': latest_period.get('regime', 'unknown'),
+                'buy_threshold': latest_period.get('buy_threshold', 60),
+                'sell_threshold': latest_period.get('sell_threshold', 40),
+                'sharpe_ratio': adaptive_result.get('sharpe_ratio', 0),
+                'total_return': adaptive_result.get('total_return', 0),
+                'win_rate': optimal_thresholds.get('win_rate', 0) if optimal_thresholds else 0,
+                'num_trades': adaptive_result.get('num_trades', 0),
+                'max_drawdown': adaptive_result.get('max_drawdown', 0),
+                'num_periods': adaptive_result.get('num_periods', 1),
+                'period_thresholds': period_thresholds
             }
 
-            # Calculate strategy performance for chart
+            # Calculate strategy performance for chart (last 120 days)
             last_120 = df_with_strategy.tail(120)
             if 'Strategy_Value' in last_120.columns and 'BuyHold_Value' in last_120.columns:
                 initial_st = last_120['Strategy_Value'].iloc[0]
                 initial_bh = last_120['BuyHold_Value'].iloc[0]
 
+                # Get trade signals within last 120 days
+                last_120_dates = set([d.strftime('%Y-%m-%d') if hasattr(d, 'strftime') else str(d) for d in last_120['Date']])
+                filtered_signals = [s for s in trade_signals_data if s['date'] in last_120_dates]
+
                 strategy_results = {
                     'dates': [d.strftime('%Y-%m-%d') if hasattr(d, 'strftime') else str(d) for d in last_120['Date']],
                     'strategy': [float((x / initial_st - 1) * 100) for x in last_120['Strategy_Value']],
                     'buyhold': [float((x / initial_bh - 1) * 100) for x in last_120['BuyHold_Value']],
+                    'trade_signals': filtered_signals,
                     'optimization_info': optimization_info
                 }
 
-            # Get behavior analysis and alpha summary
-            behavior_analysis = optimizer.get_behavior_analysis()
-            alpha_summary = optimizer.get_alpha_summary()
-            trader_profiles = optimizer.get_trader_profiles()
+            # Get behavior analysis and alpha summary from standard optimizer
+            if optimal_thresholds:
+                df_features_copy = optimizer.apply_optimal_strategy(optimal_thresholds)
+                behavior_analysis = optimizer.get_behavior_analysis()
+                alpha_summary = optimizer.get_alpha_summary()
+                trader_profiles = optimizer.get_trader_profiles()
 
-            # Extract behavior summary
-            behavior_summary = {}
-            if behavior_analysis:
-                if 'strategy_profile' in behavior_analysis:
-                    sp = behavior_analysis['strategy_profile']
-                    behavior_summary['style'] = sp.get('style', 'Unknown')
-                    behavior_summary['selectivity'] = sp.get('selectivity', 'Unknown')
-                    behavior_summary['long_exposure'] = sp.get('long_exposure', 0)
-                    behavior_summary['short_exposure'] = sp.get('short_exposure', 0)
-                    behavior_summary['cash_exposure'] = sp.get('cash_exposure', 0)
+                # Extract behavior summary
+                behavior_summary = {}
+                if behavior_analysis:
+                    if 'strategy_profile' in behavior_analysis:
+                        sp = behavior_analysis['strategy_profile']
+                        behavior_summary['style'] = sp.get('style', 'Unknown')
+                        behavior_summary['selectivity'] = sp.get('selectivity', 'Unknown')
+                        behavior_summary['long_exposure'] = sp.get('long_exposure', 0)
+                        behavior_summary['short_exposure'] = sp.get('short_exposure', 0)
+                        behavior_summary['cash_exposure'] = sp.get('cash_exposure', 0)
 
-                if 'indicator_usage' in behavior_analysis:
-                    iu = behavior_analysis['indicator_usage']
-                    behavior_summary['primary_indicators'] = [s['indicator'] for s in iu.get('primary_signals', [])]
-                    behavior_summary['confirmation_indicators'] = [s['indicator'] for s in iu.get('confirmation_signals', [])]
+                    if 'indicator_usage' in behavior_analysis:
+                        iu = behavior_analysis['indicator_usage']
+                        behavior_summary['primary_indicators'] = [s['indicator'] for s in iu.get('primary_signals', [])]
+                        behavior_summary['confirmation_indicators'] = [s['indicator'] for s in iu.get('confirmation_signals', [])]
 
-                if 'trading_summary' in behavior_analysis:
-                    behavior_summary['summary'] = behavior_analysis['trading_summary']
+                    if 'trading_summary' in behavior_analysis:
+                        behavior_summary['summary'] = behavior_analysis['trading_summary']
 
-            # Extract alpha interpretations
-            alpha_interpretations = {}
-            if alpha_summary and 'message' not in alpha_summary:
-                for category, data in alpha_summary.items():
-                    if isinstance(data, dict) and 'interpretation' in data:
-                        alpha_interpretations[category] = data['interpretation']
+                # Extract alpha interpretations
+                alpha_interpretations = {}
+                if alpha_summary and 'message' not in alpha_summary:
+                    for category, data in alpha_summary.items():
+                        if isinstance(data, dict) and 'interpretation' in data:
+                            alpha_interpretations[category] = data['interpretation']
 
-            # Add to optimization info
-            optimization_info['behavior_summary'] = behavior_summary
-            optimization_info['alpha_interpretations'] = alpha_interpretations
-            optimization_info['trader_profiles'] = trader_profiles
+                # Add to optimization info
+                optimization_info['behavior_summary'] = behavior_summary
+                optimization_info['alpha_interpretations'] = alpha_interpretations
+                optimization_info['trader_profiles'] = trader_profiles
 
-            print(f"Smart optimization complete - Regime: {optimization_info['regime']}, Buy: {optimization_info['buy_threshold']}, Sell: {optimization_info['sell_threshold']}")
+            print(f"Adaptive optimization complete - {optimization_info['num_periods']} periods, {optimization_info['num_trades']} trades")
+            print(f"Latest thresholds - Buy: {optimization_info['buy_threshold']}, Sell: {optimization_info['sell_threshold']}")
     except Exception as e:
-        print(f"Warning: Smart strategy optimization failed: {str(e)}")
+        print(f"Warning: Adaptive strategy optimization failed: {str(e)}")
         import traceback
         traceback.print_exc()
         strategy_results = None
@@ -607,51 +627,97 @@ function displayCompositeChart(compositeData) {
     const sellThreshold = compositeData.sell_threshold || 40;
     const numPoints = compositeData.dates.length;
 
-    // Create threshold line data (horizontal lines across all dates)
+    // Create threshold line arrays
     const buyThresholdLine = Array(numPoints).fill(buyThreshold);
     const sellThresholdLine = Array(numPoints).fill(sellThreshold);
+    const neutralLine = Array(numPoints).fill(50);
+
+    // Color the composite index based on zone
+    const indexColors = compositeData.index.map(val => {
+        if (val >= buyThreshold) return 'rgba(34, 197, 94, 1)';      // Green - buy zone
+        if (val <= sellThreshold) return 'rgba(239, 68, 68, 1)';     // Red - sell zone
+        return 'rgba(99, 102, 241, 1)';                               // Blue - neutral
+    });
 
     compositeChart = new Chart(ctx, {
         type: 'line',
         data: {
             labels: compositeData.dates,
-            datasets: [{
-                label: 'Composite Index',
-                data: compositeData.index,
-                borderColor: 'rgb(99, 102, 241)',
-                backgroundColor: 'rgba(99, 102, 241, 0.1)',
-                tension: 0.3,
-                borderWidth: 2,
-                fill: true,
-                yAxisID: 'y'
-            }, {
-                label: `Buy Threshold (${buyThreshold})`,
-                data: buyThresholdLine,
-                borderColor: 'rgb(34, 197, 94)',
-                borderDash: [8, 4],
-                borderWidth: 2,
-                pointRadius: 0,
-                fill: false,
-                yAxisID: 'y'
-            }, {
-                label: `Sell Threshold (${sellThreshold})`,
-                data: sellThresholdLine,
-                borderColor: 'rgb(239, 68, 68)',
-                borderDash: [8, 4],
-                borderWidth: 2,
-                pointRadius: 0,
-                fill: false,
-                yAxisID: 'y'
-            }, {
-                label: 'Stock Price',
-                data: compositeData.close,
-                borderColor: 'rgb(75, 192, 192)',
-                backgroundColor: 'rgba(75, 192, 192, 0.1)',
-                tension: 0.2,
-                borderWidth: 2,
-                fill: false,
-                yAxisID: 'y1'
-            }]
+            datasets: [
+                // Buy zone fill (above buy threshold)
+                {
+                    label: 'Buy Zone',
+                    data: buyThresholdLine,
+                    borderColor: 'transparent',
+                    backgroundColor: 'rgba(34, 197, 94, 0.1)',
+                    fill: {
+                        target: { value: 100 },
+                        above: 'rgba(34, 197, 94, 0.1)'
+                    },
+                    pointRadius: 0,
+                    yAxisID: 'y'
+                },
+                // Sell zone fill (below sell threshold)
+                {
+                    label: 'Sell Zone',
+                    data: sellThresholdLine,
+                    borderColor: 'transparent',
+                    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                    fill: {
+                        target: { value: 0 },
+                        below: 'rgba(239, 68, 68, 0.1)'
+                    },
+                    pointRadius: 0,
+                    yAxisID: 'y'
+                },
+                // Composite Index line with colored points
+                {
+                    label: 'Composite Index',
+                    data: compositeData.index,
+                    borderColor: 'rgb(99, 102, 241)',
+                    backgroundColor: 'rgba(99, 102, 241, 0.2)',
+                    tension: 0.3,
+                    borderWidth: 3,
+                    fill: false,
+                    pointRadius: 4,
+                    pointBackgroundColor: indexColors,
+                    pointBorderColor: indexColors,
+                    yAxisID: 'y'
+                },
+                // Buy threshold line
+                {
+                    label: `BUY >= ${buyThreshold}`,
+                    data: buyThresholdLine,
+                    borderColor: 'rgb(34, 197, 94)',
+                    borderDash: [10, 5],
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    fill: false,
+                    yAxisID: 'y'
+                },
+                // Sell threshold line
+                {
+                    label: `SELL <= ${sellThreshold}`,
+                    data: sellThresholdLine,
+                    borderColor: 'rgb(239, 68, 68)',
+                    borderDash: [10, 5],
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    fill: false,
+                    yAxisID: 'y'
+                },
+                // Neutral line (50)
+                {
+                    label: 'Neutral (50)',
+                    data: neutralLine,
+                    borderColor: 'rgba(156, 163, 175, 0.5)',
+                    borderDash: [5, 5],
+                    borderWidth: 1,
+                    pointRadius: 0,
+                    fill: false,
+                    yAxisID: 'y'
+                }
+            ]
         },
         options: {
             responsive: true,
@@ -662,8 +728,38 @@ function displayCompositeChart(compositeData) {
             plugins: {
                 title: {
                     display: true,
-                    text: 'Composite Index with Buy/Sell Thresholds',
-                    font: { size: 16 }
+                    text: 'COMPOSITE INDEX - Trading Signal Zones',
+                    font: { size: 16, weight: 'bold' }
+                },
+                subtitle: {
+                    display: true,
+                    text: `Green Zone = BUY (>=${buyThreshold}) | Red Zone = SELL (<=${sellThreshold}) | Blue = HOLD`,
+                    font: { size: 12 },
+                    color: '#666'
+                },
+                legend: {
+                    display: true,
+                    position: 'bottom',
+                    labels: {
+                        filter: function(item, chart) {
+                            // Hide zone fills from legend
+                            return !['Buy Zone', 'Sell Zone'].includes(item.text);
+                        }
+                    }
+                },
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            if (context.dataset.label === 'Composite Index') {
+                                const val = context.raw;
+                                let signal = 'HOLD';
+                                if (val >= buyThreshold) signal = 'BUY SIGNAL';
+                                if (val <= sellThreshold) signal = 'SELL SIGNAL';
+                                return `Index: ${val.toFixed(1)} - ${signal}`;
+                            }
+                            return context.dataset.label + ': ' + context.raw;
+                        }
+                    }
                 }
             },
             scales: {
@@ -675,25 +771,31 @@ function displayCompositeChart(compositeData) {
                     max: 100,
                     title: {
                         display: true,
-                        text: 'Composite Index (0=Sell, 100=Buy)'
+                        text: 'Composite Index',
+                        font: { weight: 'bold' }
                     },
                     ticks: {
-                        callback: value => value
-                    }
-                },
-                y1: {
-                    type: 'linear',
-                    display: true,
-                    position: 'right',
-                    title: {
-                        display: true,
-                        text: 'Stock Price ($)'
-                    },
-                    ticks: {
-                        callback: value => '$' + value.toFixed(2)
+                        stepSize: 10,
+                        callback: function(value) {
+                            if (value === buyThreshold) return value + ' (Buy)';
+                            if (value === sellThreshold) return value + ' (Sell)';
+                            if (value === 50) return '50 (Neutral)';
+                            return value;
+                        }
                     },
                     grid: {
-                        drawOnChartArea: false
+                        color: function(context) {
+                            if (context.tick.value === buyThreshold) return 'rgba(34, 197, 94, 0.3)';
+                            if (context.tick.value === sellThreshold) return 'rgba(239, 68, 68, 0.3)';
+                            if (context.tick.value === 50) return 'rgba(156, 163, 175, 0.3)';
+                            return 'rgba(0, 0, 0, 0.05)';
+                        }
+                    }
+                },
+                x: {
+                    ticks: {
+                        maxRotation: 45,
+                        minRotation: 45
                     }
                 }
             }
@@ -708,53 +810,209 @@ function displayStrategyChart(strategyData) {
         strategyChart.destroy();
     }
 
-    // Get optimization info for title
+    // Get optimization info
     const oi = strategyData.optimization_info || {};
     const regime = formatRegime(oi.regime || 'unknown');
     const sharpe = (oi.sharpe_ratio || 0).toFixed(2);
     const winRate = (oi.win_rate || 0).toFixed(1);
     const method = formatOptMethod(oi.method || 'grid_search');
+    const numPeriods = oi.num_periods || 1;
+    const numTrades = oi.num_trades || 0;
+    const totalReturn = (oi.total_return || 0).toFixed(1);
+    const maxDD = (oi.max_drawdown || 0).toFixed(1);
+
+    // Process trade signals for markers
+    const tradeSignals = strategyData.trade_signals || [];
+    const dates = strategyData.dates;
+
+    // Create arrays for buy/sell markers
+    const buyPoints = new Array(dates.length).fill(null);
+    const sellPoints = new Array(dates.length).fill(null);
+    const exitLongPoints = new Array(dates.length).fill(null);
+    const exitShortPoints = new Array(dates.length).fill(null);
+
+    // Map trade signals to strategy value at that point
+    tradeSignals.forEach(signal => {
+        const dateIndex = dates.indexOf(signal.date);
+        if (dateIndex >= 0) {
+            const strategyValue = strategyData.strategy[dateIndex];
+            if (signal.type === 'buy') {
+                buyPoints[dateIndex] = strategyValue;
+            } else if (signal.type === 'sell') {
+                sellPoints[dateIndex] = strategyValue;
+            } else if (signal.type === 'exit_long') {
+                exitLongPoints[dateIndex] = strategyValue;
+            } else if (signal.type === 'exit_short') {
+                exitShortPoints[dateIndex] = strategyValue;
+            }
+        }
+    });
+
+    // Count signals for display
+    const buyCount = tradeSignals.filter(s => s.type === 'buy').length;
+    const sellCount = tradeSignals.filter(s => s.type === 'sell').length;
 
     strategyChart = new Chart(ctx, {
         type: 'line',
         data: {
-            labels: strategyData.dates,
-            datasets: [{
-                label: 'Smart Strategy',
-                data: strategyData.strategy,
-                borderColor: 'rgb(34, 197, 94)',
-                backgroundColor: 'rgba(34, 197, 94, 0.1)',
-                tension: 0.2,
-                borderWidth: 2,
-                fill: true
-            }, {
-                label: 'Buy & Hold',
-                data: strategyData.buyhold,
-                borderColor: 'rgb(54, 162, 235)',
-                backgroundColor: 'rgba(54, 162, 235, 0.1)',
-                tension: 0.2,
-                borderWidth: 2,
-                fill: false
-            }]
+            labels: dates,
+            datasets: [
+                // Strategy performance line
+                {
+                    label: 'Adaptive Strategy',
+                    data: strategyData.strategy,
+                    borderColor: 'rgb(34, 197, 94)',
+                    backgroundColor: 'rgba(34, 197, 94, 0.15)',
+                    tension: 0.2,
+                    borderWidth: 2.5,
+                    fill: true,
+                    pointRadius: 0
+                },
+                // Buy & Hold line
+                {
+                    label: 'Buy & Hold',
+                    data: strategyData.buyhold,
+                    borderColor: 'rgb(107, 114, 128)',
+                    backgroundColor: 'transparent',
+                    tension: 0.2,
+                    borderWidth: 2,
+                    borderDash: [5, 5],
+                    fill: false,
+                    pointRadius: 0
+                },
+                // BUY signals (green dots)
+                {
+                    label: `BUY Signals (${buyCount})`,
+                    data: buyPoints,
+                    borderColor: 'rgb(34, 197, 94)',
+                    backgroundColor: 'rgb(34, 197, 94)',
+                    pointRadius: 10,
+                    pointHoverRadius: 14,
+                    pointStyle: 'triangle',
+                    rotation: 0,
+                    showLine: false,
+                    pointBorderWidth: 2,
+                    pointBorderColor: 'white'
+                },
+                // SELL signals (red dots)
+                {
+                    label: `SELL Signals (${sellCount})`,
+                    data: sellPoints,
+                    borderColor: 'rgb(239, 68, 68)',
+                    backgroundColor: 'rgb(239, 68, 68)',
+                    pointRadius: 10,
+                    pointHoverRadius: 14,
+                    pointStyle: 'triangle',
+                    rotation: 180,
+                    showLine: false,
+                    pointBorderWidth: 2,
+                    pointBorderColor: 'white'
+                },
+                // Exit long (yellow square)
+                {
+                    label: 'Exit Long',
+                    data: exitLongPoints,
+                    borderColor: 'rgb(245, 158, 11)',
+                    backgroundColor: 'rgba(245, 158, 11, 0.8)',
+                    pointRadius: 7,
+                    pointHoverRadius: 10,
+                    pointStyle: 'rect',
+                    showLine: false,
+                    pointBorderWidth: 2,
+                    pointBorderColor: 'white'
+                },
+                // Exit short (orange square)
+                {
+                    label: 'Exit Short',
+                    data: exitShortPoints,
+                    borderColor: 'rgb(249, 115, 22)',
+                    backgroundColor: 'rgba(249, 115, 22, 0.8)',
+                    pointRadius: 7,
+                    pointHoverRadius: 10,
+                    pointStyle: 'rect',
+                    showLine: false,
+                    pointBorderWidth: 2,
+                    pointBorderColor: 'white'
+                }
+            ]
         },
         options: {
             responsive: true,
+            interaction: {
+                mode: 'nearest',
+                intersect: true
+            },
             plugins: {
                 title: {
                     display: true,
-                    text: `${method} | Regime: ${regime} | Sharpe: ${sharpe} | Win Rate: ${winRate}%`,
-                    font: { size: 14 }
+                    text: `ADAPTIVE STRATEGY - Re-optimized every 90 days (${numPeriods} periods)`,
+                    font: { size: 16, weight: 'bold' }
                 },
                 subtitle: {
                     display: true,
-                    text: `Thresholds: Buy >= ${oi.buy_threshold || 60}, Sell <= ${oi.sell_threshold || 40}`,
-                    font: { size: 12 }
+                    text: `Return: ${totalReturn}% | Sharpe: ${sharpe} | Max DD: ${maxDD}% | Trades: ${numTrades} | Regime: ${regime}`,
+                    font: { size: 12 },
+                    color: '#666'
+                },
+                legend: {
+                    display: true,
+                    position: 'bottom',
+                    labels: {
+                        usePointStyle: true,
+                        padding: 15
+                    }
+                },
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            const datasetLabel = context.dataset.label;
+                            if (datasetLabel.includes('BUY Signal')) {
+                                const signal = tradeSignals.find(s => s.type === 'buy' && s.date === dates[context.dataIndex]);
+                                if (signal) {
+                                    return `BUY @ $${signal.price.toFixed(2)} (Index: ${signal.composite.toFixed(1)})`;
+                                }
+                            } else if (datasetLabel.includes('SELL Signal')) {
+                                const signal = tradeSignals.find(s => s.type === 'sell' && s.date === dates[context.dataIndex]);
+                                if (signal) {
+                                    return `SELL @ $${signal.price.toFixed(2)} (Index: ${signal.composite.toFixed(1)})`;
+                                }
+                            } else if (datasetLabel === 'Exit Long') {
+                                const signal = tradeSignals.find(s => s.type === 'exit_long' && s.date === dates[context.dataIndex]);
+                                if (signal) {
+                                    return `EXIT LONG @ $${signal.price.toFixed(2)}`;
+                                }
+                            } else if (datasetLabel === 'Exit Short') {
+                                const signal = tradeSignals.find(s => s.type === 'exit_short' && s.date === dates[context.dataIndex]);
+                                if (signal) {
+                                    return `EXIT SHORT @ $${signal.price.toFixed(2)}`;
+                                }
+                            }
+                            return `${datasetLabel}: ${context.raw !== null ? context.raw.toFixed(2) + '%' : 'N/A'}`;
+                        }
+                    }
                 }
             },
             scales: {
                 y: {
+                    title: {
+                        display: true,
+                        text: 'Return (%)',
+                        font: { weight: 'bold' }
+                    },
                     ticks: {
                         callback: value => value.toFixed(1) + '%'
+                    },
+                    grid: {
+                        color: function(context) {
+                            if (context.tick.value === 0) return 'rgba(0, 0, 0, 0.3)';
+                            return 'rgba(0, 0, 0, 0.05)';
+                        }
+                    }
+                },
+                x: {
+                    ticks: {
+                        maxRotation: 45,
+                        minRotation: 45
                     }
                 }
             }
@@ -766,7 +1024,8 @@ function formatOptMethod(method) {
     const methods = {
         'meta_learning_ensemble': 'Meta-Learning Ensemble',
         'grid_search': 'Grid Search',
-        'walk_forward': 'Walk-Forward'
+        'walk_forward': 'Walk-Forward',
+        'adaptive_90day': 'Adaptive 90-Day'
     };
     return methods[method] || method;
 }
