@@ -1605,6 +1605,201 @@ class StrategyEnsemble:
             self.weights = [1.0 / n] * n
 
 
+class AdaptiveStrategyOptimizer:
+    """
+    Adaptive Strategy Optimizer that re-optimizes thresholds every N days.
+    This allows the strategy to adapt to changing market conditions over time.
+    """
+
+    def __init__(self, df, reoptimize_days=90):
+        """
+        Initialize the adaptive optimizer.
+
+        Parameters:
+        -----------
+        df : pandas.DataFrame
+            Full historical data with Composite_Index
+        reoptimize_days : int
+            Number of days between re-optimization (default: 90)
+        """
+        self.df = df.copy()
+        self.reoptimize_days = reoptimize_days
+        self.optimization_periods = []
+        self.trade_signals = []  # List of trade points for visualization
+        self.period_thresholds = []  # Thresholds for each period
+
+    def optimize_adaptive(self, lookback_days=60):
+        """
+        Perform adaptive optimization with periodic re-optimization.
+
+        Parameters:
+        -----------
+        lookback_days : int
+            Days of historical data to use for each optimization
+
+        Returns:
+        --------
+        dict : Results including trade signals, period thresholds, and performance
+        """
+        if 'Composite_Index' not in self.df.columns:
+            return None
+
+        df = self.df.copy()
+        n_rows = len(df)
+
+        # Initialize columns
+        df['Position'] = 0
+        df['Buy_Signal'] = False
+        df['Sell_Signal'] = False
+        df['Exit_Signal'] = False
+        df['Current_Buy_Threshold'] = 60
+        df['Current_Sell_Threshold'] = 40
+
+        self.trade_signals = []
+        self.period_thresholds = []
+
+        current_position = 0
+        current_buy_threshold = 60
+        current_sell_threshold = 40
+        last_optimization_idx = 0
+
+        print(f"Starting adaptive optimization (re-optimize every {self.reoptimize_days} days)...")
+
+        for i in range(1, n_rows):
+            idx = df.index[i]
+
+            # Check if we need to re-optimize (every reoptimize_days)
+            if i - last_optimization_idx >= self.reoptimize_days or i == 1:
+                # Get lookback data for optimization
+                start_idx = max(0, i - lookback_days)
+                optimization_df = df.iloc[start_idx:i].copy()
+
+                if len(optimization_df) >= 30:  # Minimum data required
+                    # Run optimization on this period
+                    optimizer = StrategyOptimizer(optimization_df)
+                    result = optimizer.optimize_thresholds()
+
+                    if result:
+                        current_buy_threshold = result['buy_threshold']
+                        current_sell_threshold = result['sell_threshold']
+
+                        # Record this optimization period
+                        period_info = {
+                            'start_date': str(df.index[start_idx]) if hasattr(df.index[start_idx], 'strftime') else str(df.index[start_idx]),
+                            'end_date': str(idx) if hasattr(idx, 'strftime') else str(idx),
+                            'buy_threshold': current_buy_threshold,
+                            'sell_threshold': current_sell_threshold,
+                            'regime': result.get('regime', 'unknown'),
+                            'sharpe': result.get('sharpe_ratio', 0)
+                        }
+                        self.period_thresholds.append(period_info)
+                        print(f"Period {len(self.period_thresholds)}: Buy={current_buy_threshold}, Sell={current_sell_threshold}, Regime={period_info['regime']}")
+
+                last_optimization_idx = i
+
+            # Store current thresholds
+            df.at[idx, 'Current_Buy_Threshold'] = current_buy_threshold
+            df.at[idx, 'Current_Sell_Threshold'] = current_sell_threshold
+
+            # Get composite value
+            composite_value = df.at[idx, 'Composite_Index']
+            prev_position = current_position
+
+            # Trading logic
+            exit_buy = current_sell_threshold + 5
+            exit_sell = current_buy_threshold - 5
+
+            if current_position == 0:
+                if composite_value >= current_buy_threshold:
+                    current_position = 1
+                    df.at[idx, 'Buy_Signal'] = True
+                    self.trade_signals.append({
+                        'date': str(idx) if hasattr(idx, 'strftime') else str(idx),
+                        'type': 'buy',
+                        'price': df.at[idx, 'Close'],
+                        'composite': composite_value,
+                        'threshold': current_buy_threshold
+                    })
+                elif composite_value <= current_sell_threshold:
+                    current_position = -1
+                    df.at[idx, 'Sell_Signal'] = True
+                    self.trade_signals.append({
+                        'date': str(idx) if hasattr(idx, 'strftime') else str(idx),
+                        'type': 'sell',
+                        'price': df.at[idx, 'Close'],
+                        'composite': composite_value,
+                        'threshold': current_sell_threshold
+                    })
+            elif current_position == 1:
+                if composite_value <= exit_buy:
+                    current_position = 0
+                    df.at[idx, 'Exit_Signal'] = True
+                    self.trade_signals.append({
+                        'date': str(idx) if hasattr(idx, 'strftime') else str(idx),
+                        'type': 'exit_long',
+                        'price': df.at[idx, 'Close'],
+                        'composite': composite_value,
+                        'threshold': exit_buy
+                    })
+            elif current_position == -1:
+                if composite_value >= exit_sell:
+                    current_position = 0
+                    df.at[idx, 'Exit_Signal'] = True
+                    self.trade_signals.append({
+                        'date': str(idx) if hasattr(idx, 'strftime') else str(idx),
+                        'type': 'exit_short',
+                        'price': df.at[idx, 'Close'],
+                        'composite': composite_value,
+                        'threshold': exit_sell
+                    })
+
+            df.at[idx, 'Position'] = current_position
+
+        # Calculate returns
+        df['Daily_Return'] = df['Close'].pct_change()
+        df['Strategy_Return'] = df['Position'] * df['Daily_Return'].shift(-1)
+        df['Strategy_Value'] = 1000 * (1 + df['Strategy_Return'].fillna(0)).cumprod()
+        df['BuyHold_Value'] = 1000 * (1 + df['Daily_Return'].fillna(0)).cumprod()
+
+        # Drawdown calculations
+        df['Strategy_Peak'] = df['Strategy_Value'].cummax()
+        df['Strategy_Drawdown'] = (df['Strategy_Value'] - df['Strategy_Peak']) / df['Strategy_Peak']
+        df['BuyHold_Peak'] = df['BuyHold_Value'].cummax()
+        df['BuyHold_Drawdown'] = (df['BuyHold_Value'] - df['BuyHold_Peak']) / df['BuyHold_Peak']
+
+        # Calculate performance metrics
+        returns = df['Strategy_Return'].dropna()
+        total_return = (df['Strategy_Value'].iloc[-1] / 1000 - 1) * 100 if len(df) > 0 else 0
+        sharpe = np.sqrt(252) * returns.mean() / returns.std() if returns.std() > 0 else 0
+        max_dd = df['Strategy_Drawdown'].min() * 100
+
+        # Count trades
+        num_trades = len([s for s in self.trade_signals if s['type'] in ['buy', 'sell']])
+
+        self.df = df
+
+        print(f"Adaptive optimization complete: {len(self.period_thresholds)} periods, {num_trades} trades")
+
+        return {
+            'df': df,
+            'trade_signals': self.trade_signals,
+            'period_thresholds': self.period_thresholds,
+            'total_return': total_return,
+            'sharpe_ratio': sharpe,
+            'max_drawdown': max_dd,
+            'num_trades': num_trades,
+            'num_periods': len(self.period_thresholds)
+        }
+
+    def get_trade_signals(self):
+        """Get list of all trade signals for charting."""
+        return self.trade_signals
+
+    def get_period_thresholds(self):
+        """Get thresholds for each optimization period."""
+        return self.period_thresholds
+
+
 class StrategyOptimizer:
     """
     Smart Strategy Optimizer with Meta-Learning capabilities.
